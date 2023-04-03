@@ -1,4 +1,4 @@
-name: Push to Branch
+name: Every Night
 
 on:
   schedule:
