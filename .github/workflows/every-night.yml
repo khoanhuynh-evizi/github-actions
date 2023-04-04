@@ -48,4 +48,4 @@ jobs:
       with:
         run: yarn test:local --suite="Regression Test" --reporter="Spec Reporter" 
       env:
-        CAPABILITIES: chrome
+        CAPABILITIES: chrome-tablet
