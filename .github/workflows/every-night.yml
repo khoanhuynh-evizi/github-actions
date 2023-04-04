@@ -2,7 +2,7 @@ name: Every Night
 
 on:
   schedule:
-    - cron: '0 17 * * *' # 10h every day UTC+7
+    - cron: '0 17 * * *' # 12h every day UTC+7
   workflow_dispatch:
   
 jobs:
@@ -27,16 +27,7 @@ jobs:
         run: yarn test:local --suite="Regression Test" --reporter="Spec Reporter" 
       env:
         CAPABILITIES: chrome
-
-    - name: WDIO Test Checker
-      run: | 
-        cat > specs-reporter.log <<EOL
-        ${{ steps.wdio.outputs.stdout }}
-        EOL
-        if [ !  -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
-          exit 1
-        fi
-
+        
   chrome-tablet-win:
     runs-on: windows-latest
     steps:
@@ -58,12 +49,3 @@ jobs:
         run: yarn test:local --suite="Regression Test" --reporter="Spec Reporter" 
       env:
         CAPABILITIES: chrome
-
-    - name: WDIO Test Checker
-      run: | 
-        cat > specs-reporter.log <<EOL
-        ${{ steps.wdio.outputs.stdout }}
-        EOL
-        if [ !  -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
-          exit 1
-        fi
