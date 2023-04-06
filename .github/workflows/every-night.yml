@@ -35,4 +35,3 @@ jobs:
         if [ !  -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
           exit 1
         fi
-
