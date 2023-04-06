@@ -27,25 +27,12 @@ jobs:
         run: yarn test:local --suite="Regression Test" --reporter="Spec Reporter" 
       env:
         CAPABILITIES: chrome
-        
-  chrome-tablet-win:
-    runs-on: windows-latest
-    steps:
-    - uses: actions/checkout@v3
-      with:
-        repository: khoanhuynh-evizi/rc360-wdio
-        token: ${{ secrets.WDIO_ACCESS_TOKEN }}
-        ref: master
-    - name: Use Node.js 16.x
-      uses: actions/setup-node@v3
-      with:
-        node-version: 16.x
-        cache: 'npm'
-    - run: yarn install --frozen-lockfile
-    - name: Run webdriver-io tests
-      uses: StarUbiquitous/command-output@v1.0.1
-      id: wdio
-      with:
-        run: yarn test:local --suite="Regression Test" --reporter="Spec Reporter" 
-      env:
-        CAPABILITIES: chrome-tablet
+    - name: WDIO Test Checker
+      run: | 
+        cat > specs-reporter.log <<EOL
+        ${{ steps.wdio.outputs.stdout }}
+        EOL
+        if [ !  -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
+          exit 1
+        fi
+
