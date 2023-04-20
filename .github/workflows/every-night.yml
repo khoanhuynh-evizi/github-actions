@@ -27,7 +27,7 @@ jobs:
         run: yarn test:local --suite="Regression Test" --reporter="Spec Reporter" 
       env:
         CAPABILITIES: chrome
-        MAX_INSTANCES: 3
+        MAX_INSTANCES: 2
     - name: WDIO Test Checker
       run: | 
         cat > specs-reporter.log <<EOL
