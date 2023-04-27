@@ -2,7 +2,7 @@ name: Run Regression Test
 
 on:
   schedule:
-    - cron: '0 17 * * *' # 12h every day UTC+7
+    - cron: '0 17 * * *' # 24h every night UTC+7
   workflow_dispatch:
   
 jobs:
