@@ -1,4 +1,4 @@
-name: Run Regression Test
+name: Smoke Test Test
 
 on:
   schedule:
