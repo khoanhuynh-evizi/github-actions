@@ -1,8 +1,7 @@
-name: Smoke Test
+name: With artifact
 
 on:
-  schedule:
-    - cron: '0 20 * * *' # 03:00h every night UTC+7
+  push:
   workflow_dispatch:
 
 concurrency:
