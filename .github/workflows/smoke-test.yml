@@ -40,3 +40,13 @@ jobs:
         if [ !  -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
           exit 1
         fi
+    - uses: simple-elf/allure-report-action@v1.6
+      if: always()
+      with:
+        allure_report: allure-report
+    - uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: allure-report
+        path: allure-report/
+        retention-days: 7
