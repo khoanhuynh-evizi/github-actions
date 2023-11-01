@@ -1,7 +1,6 @@
 name: With artifact
 
 on:
-  push:
   workflow_dispatch:
 
 concurrency:
