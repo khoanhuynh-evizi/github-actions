@@ -10,8 +10,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  chrome-macos:
-    runs-on: macos-latest
+  chrome-ubuntu:
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
       with:
