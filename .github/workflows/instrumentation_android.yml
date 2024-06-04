@@ -115,7 +115,7 @@ jobs:
           arch: ${{ matrix.arch }}
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          avd-name: Pixel_6_Pro_${{ matrix.version }}
+          avd-name: Nexus6_${{ matrix.version }}
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: echo "Generated AVD snapshot for caching."
@@ -130,7 +130,7 @@ jobs:
           arch: ${{ matrix.arch }}
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          avd-name: Pixel_6_Pro_${{ matrix.version }}
+          avd-name: Nexus6_${{ matrix.version }}
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
@@ -150,7 +150,7 @@ jobs:
           arch: ${{ matrix.arch }}
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          avd-name: Pixel_6_Pro_${{ matrix.version }}
+          avd-name: Nexus6_${{ matrix.version }}
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
