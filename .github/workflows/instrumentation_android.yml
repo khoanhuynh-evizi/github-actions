@@ -35,11 +35,14 @@ jobs:
     strategy:
       matrix:
         include:
-          - version: '29'
+          # - version: '30'
+          #   arch: "x86_64"
+          #   target: "google_apis"
+          #   profile: "Nexus 6"
+          - version: '31'
             arch: "x86_64"
             target: "google_apis"
             profile: "Nexus 6"
-          # - { version: '31', arch: "x86_64", target: "google_apis", profile: "Nexus 6" }
     steps:
 
       - name: Trigger clean-up data ui testing
