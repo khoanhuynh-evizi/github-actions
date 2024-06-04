@@ -42,7 +42,7 @@ jobs:
           - version: '34'
             arch: "x86_64"
             target: "google_apis"
-            profile: "Pixel 6 Pro"
+            profile: "Nexus 6"
     steps:
 
       - name: Trigger clean-up data ui testing
