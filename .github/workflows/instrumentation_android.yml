@@ -42,7 +42,7 @@ jobs:
           - version: '31'
             arch: "x86_64"
             target: "google_apis"
-            profile: "Nexus 6"
+            profile: "Pixel 6 Pro"
     steps:
 
       - name: Trigger clean-up data ui testing
@@ -86,7 +86,7 @@ jobs:
       - name: Download schema from staging using task:downloadApolloSchema 
         run: ./gradlew Submodule:sdk:downloadApolloSchema --endpoint=${{secrets.WDIO_ENDPOINT}} --schema=${{secrets.WDIO_PATH_SCHEMA}}
 
-      - name: assemble tests
+      - name: Assemble tests
         run: ./gradlew assembleStagingDebugAndroidTest
         
       - name: AVD cache
@@ -115,7 +115,7 @@ jobs:
           arch: ${{ matrix.arch }}
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          avd-name: Nexus6_${{ matrix.version }}
+          avd-name: Pixel_6_Pro_${{ matrix.version }}
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: echo "Generated AVD snapshot for caching."
@@ -130,10 +130,13 @@ jobs:
           arch: ${{ matrix.arch }}
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          avd-name: Nexus6_${{ matrix.version }}
+          avd-name: Pixel_6_Pro_${{ matrix.version }}
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
+            adb devices
+            adb shell wm size
+            adb shell wm density
             chmod +x ./scripts/run-tests.sh
             ./scripts/run-tests.sh --instrument-options=${{ inputs.instrument_options }}
           
@@ -147,10 +150,14 @@ jobs:
           arch: ${{ matrix.arch }}
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          avd-name: Nexus6_${{ matrix.version }}
+          avd-name: Pixel_6_Pro_${{ matrix.version }}
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=${{ secrets.WDIO_PACKAGE }}.tests.suite.${{ inputs.testsuite }} --stacktrace
+          script: |
+            adb devices
+            adb shell wm size
+            adb shell wm density
+            ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=${{ secrets.WDIO_PACKAGE }}.tests.suite.${{ inputs.testsuite }} --stacktrace
 
       - name: Upload reports testsuite ${{ inputs.testsuite }} on API ${{ matrix.version }}
         if: always()
