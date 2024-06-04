@@ -35,11 +35,11 @@ jobs:
     strategy:
       matrix:
         include:
-          # - version: '30'
+          # - version: '33'
           #   arch: "x86_64"
           #   target: "google_apis"
           #   profile: "Nexus 6"
-          - version: '31'
+          - version: '34'
             arch: "x86_64"
             target: "google_apis"
             profile: "Pixel 6 Pro"
