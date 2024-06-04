@@ -19,6 +19,10 @@ on:
       instrument_options:
         description: Input subset of tests for testing
         required: false
+      branch:
+        description: checkout branch
+        default: master
+        required: true
 
 permissions:
   contents: read
@@ -28,7 +32,6 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    environment: AutomatedTesting
     strategy:
       matrix:
         android:
@@ -44,6 +47,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
+          repository: ${{secrets.WDIO_REPOS}}
+          ref: ${{ inputs.branch }}
           submodules: true
 
       - name: Enable KVM group permissions
@@ -79,7 +84,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Download schema from staging using task:downloadApolloSchema 
-        run: ./gradlew Submodule:sdk:downloadApolloSchema --endpoint='https://api-s.record360.com/v2' --schema=Submodule/sdk/src/main/assets/graphql/record360/schema.json
+        run: ./gradlew Submodule:sdk:downloadApolloSchema --endpoint=${{secrets.WDIO_ENDPOINT}} --schema=${{secrets.WDIO_PATH_SCHEMA}}
 
       - name: AVD cache
         uses: actions/cache@v4
@@ -132,7 +137,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.record360.app.test.tests.suite.${{ inputs.testsuite }} --stacktrace
+          script: ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=${{ inputs.WDIO_PACKAGE }}.tests.suite.${{ inputs.testsuite }} --stacktrace
 
       - name: Upload reports testsuite ${{ inputs.testsuite }} on API ${{ matrix.android.version }}
         if: always()
