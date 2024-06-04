@@ -44,7 +44,7 @@ jobs:
           curl -XPOST -u "khoanhuynh-evizi:${{secrets.WDIO_ACCESS_TOKEN}}" -H "Accept: application/vnd.github.everest-preview+json" -H "Content-Type: application/json" https://api.github.com/repos/Record360/webdriver-io/dispatches --data '{"event_type": "cleanup_data", "client_payload": {"company": "101", "framework": "android"}}'
 
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_REPOS}}
