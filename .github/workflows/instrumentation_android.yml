@@ -39,10 +39,10 @@ jobs:
           #   arch: "x86_64"
           #   target: "google_apis"
           #   profile: "Nexus 6"
-          - version: '34'
-            arch: "x86_64"
-            target: "google_apis"
-            profile: "Nexus 6"
+          - version: 34
+            target: google_apis
+            arch: x86_64
+            profile: "Pixel 6 Pro"
     steps:
 
       - name: Trigger clean-up data ui testing
@@ -113,24 +113,22 @@ jobs:
           target: ${{ matrix.target }}
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
-          emulator-boot-timeout: 12000
-          force-avd-creation: false
           avd-name: Nexus6_${{ matrix.version }}
+          force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: echo "Generated AVD snapshot for caching."
 
       - name: Execute custom instrument test ${{ inputs.instrument_options }} on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options != '' }}"
-        uses: reactivecircus/android-emulator-runner@v2.31.0
+        uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.version }}
           target: ${{ matrix.target }}
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
-          emulator-boot-timeout: 12000
-          force-avd-creation: false
           avd-name: Nexus6_${{ matrix.version }}
+          force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
@@ -142,15 +140,14 @@ jobs:
           
       - name: Execute Instrument Testsuite ${{ inputs.testsuite }} on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
-        uses: reactivecircus/android-emulator-runner@v2.31.0
+        uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.version }}
           target: ${{ matrix.target }}
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
-          emulator-boot-timeout: 12000
-          force-avd-creation: false
           avd-name: Nexus6_${{ matrix.version }}
+          force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
