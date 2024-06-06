@@ -18,7 +18,7 @@ on:
         - LoginFeature
       branch:
         description: checkout branch
-        default: 4.16_automation
+        default: stablized_testcase_github_action
         required: true
       instrument_options:
         description: Input subset of tests for testing
