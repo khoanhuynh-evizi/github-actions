@@ -34,7 +34,7 @@ jobs:
       - name: Install Dependencies
         run: |
           eval `ssh-agent -s`
-          ssh-add - <<< '${{ secrets.WDIO_ACCESS_TOKEN }}'
+          ssh-add - <<< '${{ secrets.DEPLOY_KEY }}'
           pod install --repo-update
         shell: bash
         
