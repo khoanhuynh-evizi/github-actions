@@ -1,0 +1,63 @@
+name: iOS UI Test
+run-name: ${{ github.actor }} is XCUITests
+on:
+  workflow_dispatch:    
+    inputs:
+      company:
+        description: 'Provide company for clean mobile tesing'
+        required: true
+        type: string
+        default: "101"
+      branch:
+        description: checkout branch
+        default: master
+        required: true
+jobs:
+  clean-up-mobile-data-ui-testing:
+    name: Clean-up data ui testing
+    runs-on: ubuntu-latest
+    steps:
+    - run: |
+        curl -XPOST -u "khoanhuynh-evizi:${{secrets.WDIO_ACCESS_TOKEN}}" -H "Accept: application/vnd.github.everest-preview+json" -H "Content-Type: application/json" https://api.github.com/repos/${{secrets.WDIO_WEB_DRIVER_REPOS}}/dispatches --data '{"event_type": "cleanup_data", "client_payload": {"company": "'${{ github.event.inputs.company }}'", "framework": "ios"}}' 
+  build:
+    name: Test UI on Simulator
+    runs-on: macos-latest
+    needs: clean-up-mobile-data-ui-testing
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          token: ${{secrets.WDIO_ACCESS_TOKEN}}
+          repository: ${{secrets.WDIO_IOS_REPOS}}
+          ref: ${{ inputs.branch }}
+
+      - name: Install Dependencies
+        run: |
+          eval `ssh-agent -s`
+          ssh-add - <<< '${{ secrets.WDIO_ACCESS_TOKEN }}'
+          pod install --repo-update
+        shell: bash
+        
+      - name: Copy Configuration plist
+        run: sh ci_scripts/ci_configuration.sh
+        shell: bash
+
+      - name: Execute on iPhone 15
+        id: xcode-execute
+        uses: sersoft-gmbh/xcodebuild-action@v2
+        with:
+          workspace: record360.xcworkspace
+          scheme: record360-staging
+          destination: "platform=iOS Simulator,name=iPhone 15"
+          test-plan: Record360-Staging-UI
+          action: test
+          result-bundle-path: TestResult-iPhone15.xcresult
+          output-formatter: xcpretty --color
+
+      - name: Generate Test Report
+        if: success() || failure()
+        uses: kishikawakatsumi/xcresulttool@v1
+        with:
+          path: TestResult-iPhone15.xcresult
+          title: xcresultReport_iPhone15
+          show-code-coverage: false
