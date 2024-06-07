@@ -31,11 +31,14 @@ jobs:
           repository: ${{secrets.WDIO_IOS_REPOS}}
           ref: ${{ inputs.branch }}
 
-      - name: Install Dependencies
-        run: |
-          eval `ssh-agent -s`
-          ssh-add - <<< '${{ secrets.DEPLOY_KEY }}'
-          pod install --repo-update
+      - name: Set up SSH Agent and Key
+        uses: tanmancan/action-setup-ssh-agent-key@1.0.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+          ssh-public-key: ${{ secrets.PUBLIC_KEY }}
+
+      - name: Install CocoaPods dependencies
+        run: pod install --repo-update
         shell: bash
         
       - name: Copy Configuration plist
