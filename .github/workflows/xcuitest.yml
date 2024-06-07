@@ -13,16 +13,16 @@ on:
         default: master
         required: true
 jobs:
-  clean-up-mobile-data-ui-testing:
-    name: Clean-up data ui testing
-    runs-on: ubuntu-latest
-    steps:
-    - run: |
-        curl -XPOST -u "khoanhuynh-evizi:${{secrets.WDIO_ACCESS_TOKEN}}" -H "Accept: application/vnd.github.everest-preview+json" -H "Content-Type: application/json" https://api.github.com/repos/${{secrets.WDIO_WEB_DRIVER_REPOS}}/dispatches --data '{"event_type": "cleanup_data", "client_payload": {"company": "'${{ github.event.inputs.company }}'", "framework": "ios"}}' 
+  # clean-up-mobile-data-ui-testing:
+  #   name: Clean-up data ui testing
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #   - run: |
+  #       curl -XPOST -u "khoanhuynh-evizi:${{secrets.WDIO_ACCESS_TOKEN}}" -H "Accept: application/vnd.github.everest-preview+json" -H "Content-Type: application/json" https://api.github.com/repos/${{secrets.WDIO_WEB_DRIVER_REPOS}}/dispatches --data '{"event_type": "cleanup_data", "client_payload": {"company": "'${{ github.event.inputs.company }}'", "framework": "ios"}}' 
   build:
     name: Test UI on Simulator
     runs-on: macos-latest
-    needs: clean-up-mobile-data-ui-testing
+    # needs: clean-up-mobile-data-ui-testing
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -31,11 +31,10 @@ jobs:
           repository: ${{secrets.WDIO_IOS_REPOS}}
           ref: ${{ inputs.branch }}
 
-      - name: Set up SSH Agent and Key
-        uses: tanmancan/action-setup-ssh-agent-key@1.0.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
-          ssh-public-key: ${{ secrets.PUBLIC_KEY }}
+      - name: Set up SSH
+        run: |
+          eval `ssh-agent -s`
+          ssh-add - <<< '${{ secrets.DEPLOY_KEY }}'
 
       - name: Install CocoaPods dependencies
         run: pod install --repo-update
