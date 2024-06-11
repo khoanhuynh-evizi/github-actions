@@ -4,25 +4,19 @@ run-name: ${{ github.actor }} is running Instrument Tests
 on:
   workflow_dispatch:
     inputs:
-      testsuite:
-        type: choice
-        description: Pick TestSuite Name
-        default: InstrumentationUiTestSuite
-        required: true
-        options: 
-        - AllTestCases
-        - TasksFeature
-        - NotificationsFeature
-        - InspectionsFeature
-        - TransactionsFeature
-        - LoginFeature
       branch:
         description: checkout branch
-        default: stablized_testcase_github_action
+        default: FE-2293
         required: true
-      instrument_options:
-        description: Input subset of tests for testing
+      testsuite:
+        description: url path of testsuite
         required: false
+      env:
+        description: url path of env
+        required: false
+env:
+    PATH_TEST_SUITE: app/src/androidTest/assets/testsuite.json
+    PATH_ENV: app/src/androidTest/assets/env.json
 
 permissions:
   contents: read
@@ -35,10 +29,6 @@ jobs:
     strategy:
       matrix:
         include:
-          # - version: '33'
-          #   arch: "x86_64"
-          #   target: "google_apis"
-          #   profile: "Nexus 6"
           - version: 34
             target: google_apis
             arch: x86_64
@@ -86,6 +76,16 @@ jobs:
       - name: Download schema from staging using task:downloadApolloSchema 
         run: ./gradlew Submodule:sdk:downloadApolloSchema --endpoint=${{secrets.WDIO_ENDPOINT}} --schema=${{secrets.WDIO_PATH_SCHEMA}}
 
+      - name: Download Configuration for instrument test
+        if: "${{ inputs.env != '' }}"
+        run: |
+          curl -o $PATH_ENV ${{ inputs.env }}
+
+      - name: Download Testsuite for instrument test
+        if: "${{ inputs.testsuite != '' }}"
+        run: |
+            curl -o $PATH_TEST_SUITE ${{ inputs.testsuite }}
+            
       - name: Assemble tests
         run: ./gradlew assembleStagingDebugAndroidTest
         
@@ -118,56 +118,38 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: echo "Generated AVD snapshot for caching."
-
-      - name: Execute custom instrument test ${{ inputs.instrument_options }} on API ${{ matrix.version }}
-        if: "${{ inputs.instrument_options != '' }}"
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ matrix.version }}
-          target: ${{ matrix.target }}
-          profile: ${{ matrix.profile }}
-          arch: ${{ matrix.arch }}
-          avd-name: Nexus6_${{ matrix.version }}
-          force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          disable-animations: true
-          script: |
-            adb shell wm size
-            adb shell wm density
-            chmod +x ./scripts/run-tests.sh
-            ./scripts/run-tests.sh --instrument-options=${{ inputs.instrument_options }}
           
-      - name: Execute Instrument Testsuite ${{ inputs.testsuite }} on API ${{ matrix.version }}
-        if: "${{ inputs.instrument_options == '' }}"
+      - name: Execute Record360 Staging Instrument on API ${{ matrix.version }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.version }}
           target: ${{ matrix.target }}
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
-          avd-name: Nexus6_${{ matrix.version }}
           force-avd-creation: false
+          avd-name: Nexus6_${{ matrix.version }}
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
             adb shell wm size
             adb shell wm density
-            ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=${{ secrets.WDIO_PACKAGE }}.tests.suite.${{ inputs.testsuite }} --stacktrace
+            chmod +x ./scripts/run-testsuite.sh
+            ./scripts/run-testsuite.sh --package=com.record360.app.test.tests --path="$PATH_TEST_SUITE"
 
-      - name: Upload reports testsuite ${{ inputs.testsuite }} on API ${{ matrix.version }}
+      - name: Upload reports on API ${{ matrix.version }}
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-suite-${{ inputs.testsuite }}-${{ matrix.version }}
+          name: test-suite-${{ matrix.version }}
           path: |
             app/build/outputs/*/connected/*
             app/build/reports/androidTests/connected/**
 
-      - name: Generate reports testsuite ${{ inputs.testsuite }} on API ${{ matrix.version }}
+      - name: Generate reports on API ${{ matrix.version }}
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: Report Testsuite ${{ inputs.testsuite }} on API ${{ matrix.version }}
+          name: Report Testsuite on API ${{ matrix.version }}
           path: app/build/outputs/*/connected/**/flavors/**/*.xml
           reporter: java-junit
           fail-on-empty: 'false'
