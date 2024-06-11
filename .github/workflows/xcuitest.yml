@@ -3,22 +3,30 @@ run-name: ${{ github.actor }} is XCUITests
 on:
   workflow_dispatch:    
     inputs:
-      company:
-        description: 'Provide company for clean mobile tesing'
-        required: true
-        type: string
-        default: "101"
       branch:
         description: checkout branch
-        default: master
+        default: FE-2293
         required: true
+      testsuite:
+        description: url path of testsuite
+        required: false
+      env:
+        description: url path of env
+        required: false
+      list_tests:
+        description: Input subset of tests for testing
+        required: false
+env:
+    PATH_TEST_SUITE: record360UITests/Resources/testsuite.json
+    PATH_ENV: record360UITests/Resources/env.json
+    
 jobs:
   # clean-up-mobile-data-ui-testing:
   #   name: Clean-up data ui testing
   #   runs-on: ubuntu-latest
   #   steps:
   #   - run: |
-  #       curl -XPOST -u "khoanhuynh-evizi:${{secrets.WDIO_ACCESS_TOKEN}}" -H "Accept: application/vnd.github.everest-preview+json" -H "Content-Type: application/json" https://api.github.com/repos/${{secrets.WDIO_WEB_DRIVER_REPOS}}/dispatches --data '{"event_type": "cleanup_data", "client_payload": {"company": "'${{ github.event.inputs.company }}'", "framework": "ios"}}' 
+  #       curl -XPOST -u "khoanhuynh-evizi:${{secrets.WDIO_ACCESS_TOKEN}}" -H "Accept: application/vnd.github.everest-preview+json" -H "Content-Type: application/json" https://api.github.com/repos/${{secrets.WDIO_WEB_DRIVER_REPOS}}/dispatches --data '{"event_type": "cleanup_data", "client_payload": {"company": "101", "framework": "ios"}}' 
   build:
     name: Test UI on Simulator
     runs-on: macos-latest
@@ -36,11 +44,6 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
           ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
-      # - name: Set up SSH
-      #   run: |
-      #     eval `ssh-agent -s`
-      #     ssh-add - <<< '${{ secrets.DEPLOY_KEY }}'
-          
 
       - name: Install CocoaPods dependencies
         run: pod install --repo-update
@@ -50,22 +53,36 @@ jobs:
         run: sh ci_scripts/ci_configuration.sh
         shell: bash
 
-      - name: Execute on iPhone 15
-        id: xcode-execute
-        uses: sersoft-gmbh/xcodebuild-action@v2
-        with:
-          workspace: record360.xcworkspace
-          scheme: record360-staging
-          destination: "platform=iOS Simulator,name=iPhone 15"
-          test-plan: Record360-Staging-UI
-          action: test
-          result-bundle-path: TestResult-iPhone15.xcresult
-          output-formatter: xcpretty --color
+      - name: Download configuration for XCUITest
+        if: "${{ inputs.env != '' }}"
+        run: |
+          curl -o $PATH_ENV ${{ inputs.env }}
+        shell: bash
 
-      - name: Generate Test Report
+      - name: Download Testsuite for XCUITest
+        if: "${{ inputs.testsuite != '' }}"
+        run: |
+          curl -o $PATH_TEST_SUITE ${{ inputs.testsuite }}
+        shell: bash
+
+      - name: Execute Staging-UI on iPhone 14
+        if: "${{ inputs.list_tests == '' }}"
+        run: |
+          chmod +x ./ci_scripts/run-testsuite.sh
+          ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE"
+        shell: bash
+
+      - name: Execute custom test Staging-UI on iPhone 14
+        if: "${{ inputs.list_tests != '' }}"
+        run: |
+          chmod +x ./ci_scripts/run-tests.sh
+          ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }}
+        shell: bash
+
+      - name: Generate Test Report - iPhone 14 - Record360-Staging-UI
         if: success() || failure()
         uses: kishikawakatsumi/xcresulttool@v1
         with:
-          path: TestResult-iPhone15.xcresult
-          title: xcresultReport_iPhone15
+          path: TestResult-iPhone14_Staging-UI.xcresult
+          title: xcresultReport_iPhone14_Record360-Staging-UI
           show-code-coverage: false
