@@ -75,6 +75,7 @@ jobs:
         run: |
           chmod +x ./ci_scripts/run-testsuite.sh
           ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE"
+          ls
         shell: bash
 
       - name: Execute custom test Staging-UI on iPhone 14
@@ -82,6 +83,7 @@ jobs:
         run: |
           chmod +x ./ci_scripts/run-tests.sh
           ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }}
+          ls
         shell: bash
 
       - name: Generate Test Report - iPhone 14 - Record360-Staging-UI
