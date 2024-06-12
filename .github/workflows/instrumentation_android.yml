@@ -38,9 +38,9 @@ jobs:
             profile: "Nexus 6"
     steps:
 
-      - name: Trigger clean-up data ui testing
-        run: |
-          curl -XPOST -u "khoanhuynh-evizi:${{secrets.WDIO_ACCESS_TOKEN}}" -H "Accept: application/vnd.github.everest-preview+json" -H "Content-Type: application/json" https://api.github.com/repos/Record360/webdriver-io/dispatches --data '{"event_type": "cleanup_data", "client_payload": {"company": "101", "framework": "android"}}'
+      # - name: Trigger clean-up data ui testing
+      #   run: |
+      #     curl -XPOST -u "khoanhuynh-evizi:${{secrets.WDIO_ACCESS_TOKEN}}" -H "Accept: application/vnd.github.everest-preview+json" -H "Content-Type: application/json" https://api.github.com/repos/Record360/webdriver-io/dispatches --data '{"event_type": "cleanup_data", "client_payload": {"company": "101", "framework": "android"}}'
       - name: checkout
         uses: actions/checkout@v3
         with:
