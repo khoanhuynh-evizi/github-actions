@@ -19,7 +19,12 @@ on:
 env:
     PATH_TEST_SUITE: record360UITests/Resources/testsuite.json
     PATH_ENV: record360UITests/Resources/env.json
-    
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+  
 jobs:
   # clean-up-mobile-data-ui-testing:
   #   name: Clean-up data ui testing
