@@ -3,10 +3,6 @@ run-name: ${{ github.actor }} is XCUITests
 on:
   workflow_dispatch:    
     inputs:
-      branch:
-        description: checkout branch
-        default: FE-2293
-        required: true
       testsuite:
         description: url path of testsuite
         required: false
@@ -42,7 +38,7 @@ jobs:
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_IOS_REPOS}}
-          ref: ${{ inputs.branch }}
+          ref: ${{ secrets.WDIO_IOS_BRANCH }}
 
       - name: Set up SSH Agent and Key
         uses: tanmancan/action-setup-ssh-agent-key@1.0.0
