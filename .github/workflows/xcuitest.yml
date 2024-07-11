@@ -57,6 +57,12 @@ jobs:
         if: "${{ inputs.useUrlEnv == true }}"
         run: |
           curl -o $PATH_ENV '${{ secrets.WDIO_IOS_PATH_ENV }}'
+          status_code=$(curl -s -o /dev/null -w "%{http_code}" '${{ secrets.WDIO_IOS_PATH_ENV }}')
+          if [ "$status_code" -eq 200 ]; then
+            echo "Download Env XCUITest successful!"
+          else
+            echo "Download failed with status code $status_code."
+          fi
         shell: bash
 
       - name: Download TestRun for XCUITest
@@ -65,7 +71,7 @@ jobs:
           curl -o $PATH_TEST_SUITE '${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}'
           status_code=$(curl -s -o /dev/null -w "%{http_code}" '${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}')
           if [ "$status_code" -eq 200 ]; then
-            echo "Download successful!"
+            echo "Download TestRun successful!"
           else
             echo "Download failed with status code $status_code."
           fi
@@ -75,6 +81,12 @@ jobs:
         if: "${{ inputs.useUrlTestData == true }}"
         run: |
           curl -o $PATH_TEST_DATA '${{ secrets.WDIO_IOS_PATH_TEST_DATA }}'
+          status_code=$(curl -s -o /dev/null -w "%{http_code}" '${{ secrets.WDIO_IOS_PATH_TEST_DATA }}')
+          if [ "$status_code" -eq 200 ]; then
+            echo "Download TestData successful!"
+          else
+            echo "Download failed with status code $status_code."
+          fi
         shell: bash
 
       - name: Install CocoaPods dependencies
