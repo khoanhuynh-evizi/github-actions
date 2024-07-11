@@ -47,23 +47,23 @@ jobs:
           repository: ${{secrets.WDIO_IOS_REPOS}}
           ref: ${{ secrets.WDIO_IOS_BRANCH }}
 
-      - name: Set up SSH Agent and Key
-        uses: tanmancan/action-setup-ssh-agent-key@1.0.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
-          ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
+      # - name: Set up SSH Agent and Key
+      #   uses: tanmancan/action-setup-ssh-agent-key@1.0.0
+      #   with:
+      #     ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+      #     ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
 
-      - name: Download configuration for XCUITest
-        if: "${{ inputs.useUrlEnv == true }}"
-        run: |
-          curl -o $PATH_ENV ${{ secrets.WDIO_IOS_PATH_ENV }}
-        shell: bash
+      # - name: Download configuration for XCUITest
+      #   if: "${{ inputs.useUrlEnv == true }}"
+      #   run: |
+      #     curl -o $PATH_ENV ${{ secrets.WDIO_IOS_PATH_ENV }}
+      #   shell: bash
 
       - name: Download TestRun for XCUITest
         if: "${{ inputs.useUrlTestRun == true }}"
         run: |
-          curl -o '$PATH_TEST_SUITE' '${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}'
-          status_code=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.WDIO_IOS_PATH_TEST_SUITE }})
+          curl -o $PATH_TEST_SUITE '${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}'
+          status_code=$(curl -s -o /dev/null -w "%{http_code}" '${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}')
           if [ "$status_code" -eq 200 ]; then
             echo "Download successful!"
             cd record360UITests/Resources
@@ -74,42 +74,42 @@ jobs:
           fi
         shell: bash
 
-      - name: Download TestData for XCUITest
-        if: "${{ inputs.useUrlTestData == true }}"
-        run: |
-          curl -o $PATH_TEST_DATA ${{ secrets.WDIO_IOS_PATH_TEST_DATA }}
-        shell: bash
+      # - name: Download TestData for XCUITest
+      #   if: "${{ inputs.useUrlTestData == true }}"
+      #   run: |
+      #     curl -o $PATH_TEST_DATA ${{ secrets.WDIO_IOS_PATH_TEST_DATA }}
+      #   shell: bash
 
-      - name: Install CocoaPods dependencies
-        run: |
-          cd record360UITests/Resources
-          ls
-          cd ../../
-          pod install --repo-update
-        shell: bash
+      # - name: Install CocoaPods dependencies
+      #   run: |
+      #     cd record360UITests/Resources
+      #     ls
+      #     cd ../../
+      #     pod install --repo-update
+      #   shell: bash
         
-      - name: Copy Configuration plist
-        run: sh ci_scripts/ci_configuration.sh
-        shell: bash
+      # - name: Copy Configuration plist
+      #   run: sh ci_scripts/ci_configuration.sh
+      #   shell: bash
 
-      - name: Execute Staging-UI on iPhone 14
-        if: "${{ inputs.list_tests == '' }}"
-        run: |
-          chmod +x ./ci_scripts/run-testsuite.sh
-          ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE"
-        shell: bash
+      # - name: Execute Staging-UI on iPhone 14
+      #   if: "${{ inputs.list_tests == '' }}"
+      #   run: |
+      #     chmod +x ./ci_scripts/run-testsuite.sh
+      #     ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE"
+      #   shell: bash
 
-      - name: Execute custom test Staging-UI on iPhone 14
-        if: "${{ inputs.list_tests != '' }}"
-        run: |
-          chmod +x ./ci_scripts/run-tests.sh
-          ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }}
-        shell: bash
+      # - name: Execute custom test Staging-UI on iPhone 14
+      #   if: "${{ inputs.list_tests != '' }}"
+      #   run: |
+      #     chmod +x ./ci_scripts/run-tests.sh
+      #     ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }}
+      #   shell: bash
 
-      - name: Generate Test Report - iPhone 14 - Record360-Staging-UI
-        if: success() || failure()
-        uses: kishikawakatsumi/xcresulttool@v1
-        with:
-          path: TestResult-iPhone14_Staging-UI.xcresult
-          title: xcresultReport_iPhone14_Record360-Staging-UI
-          show-code-coverage: false
+      # - name: Generate Test Report - iPhone 14 - Record360-Staging-UI
+      #   if: success() || failure()
+      #   uses: kishikawakatsumi/xcresulttool@v1
+      #   with:
+      #     path: TestResult-iPhone14_Staging-UI.xcresult
+      #     title: xcresultReport_iPhone14_Record360-Staging-UI
+      #     show-code-coverage: false
