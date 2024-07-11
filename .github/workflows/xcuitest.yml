@@ -63,9 +63,15 @@ jobs:
         if: "${{ inputs.useUrlTestRun == true }}"
         run: |
           curl -o $PATH_TEST_SUITE ${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}
-          cd record360UITests/Resources
-          ls
-          cd ../../
+          status_code=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.WDIO_IOS_PATH_TEST_SUITE }})
+          if [ "$status_code" -eq 200 ]; then
+            echo "Download successful!"
+            cd record360UITests/Resources
+            ls
+            cd ../../
+          else
+            echo "Download failed with status code $status_code."
+          fi
         shell: bash
 
       - name: Download TestData for XCUITest
