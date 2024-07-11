@@ -3,11 +3,17 @@ run-name: ${{ github.actor }} is XCUITests
 on:
   workflow_dispatch:    
     inputs:
-      testsuite:
-        description: url path of testsuite
+      useUrlTestRun:
+        description: Enable download testrun from url
+        type: boolean
         required: false
-      env:
-        description: url path of env
+      useUrlEnv:
+        description: Enable download env from url
+        type: boolean
+        required: false
+      useUrlTestData:
+        description: Enable download testdata from url
+        type: boolean
         required: false
       list_tests:
         description: Input subset of tests for testing
@@ -15,6 +21,7 @@ on:
 env:
     PATH_TEST_SUITE: record360UITests/Resources/testsuite.json
     PATH_ENV: record360UITests/Resources/env.json
+    PATH_TEST_DATA: record360UITests/Resources/testdata.json
 
 permissions:
   contents: read
@@ -55,15 +62,21 @@ jobs:
         shell: bash
 
       - name: Download configuration for XCUITest
-        if: "${{ inputs.env != '' }}"
+        if: "${{ inputs.useUrlEnv == true }}"
         run: |
-          curl -o $PATH_ENV ${{ inputs.env }}
+          curl -o $PATH_ENV ${{ secrets.WDIO_IOS_PATH_ENV }}
         shell: bash
 
-      - name: Download Testsuite for XCUITest
-        if: "${{ inputs.testsuite != '' }}"
+      - name: Download TestRun for XCUITest
+        if: "${{ inputs.useUrlTestRun == true }}"
         run: |
-          curl -o $PATH_TEST_SUITE ${{ inputs.testsuite }}
+          curl -o $PATH_TEST_SUITE ${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}
+        shell: bash
+
+      - name: Download TestData for XCUITest
+        if: "${{ inputs.useUrlTestData == true }}"
+        run: |
+          curl -o $PATH_TEST_DATA ${{ secrets.WDIO_IOS_PATH_TEST_DATA }}
         shell: bash
 
       - name: Execute Staging-UI on iPhone 14
