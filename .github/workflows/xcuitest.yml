@@ -62,7 +62,7 @@ jobs:
       - name: Download TestRun for XCUITest
         if: "${{ inputs.useUrlTestRun == true }}"
         run: |
-          curl -o $PATH_TEST_SUITE ${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}
+          curl -o '$PATH_TEST_SUITE' '${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}'
           status_code=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.WDIO_IOS_PATH_TEST_SUITE }})
           if [ "$status_code" -eq 200 ]; then
             echo "Download successful!"
@@ -81,7 +81,11 @@ jobs:
         shell: bash
 
       - name: Install CocoaPods dependencies
-        run: pod install --repo-update
+        run: |
+          cd record360UITests/Resources
+          ls
+          cd ../../
+          pod install --repo-update
         shell: bash
         
       - name: Copy Configuration plist
