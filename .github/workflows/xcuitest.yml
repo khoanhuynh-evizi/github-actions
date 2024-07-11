@@ -53,14 +53,6 @@ jobs:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
           ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
 
-      - name: Install CocoaPods dependencies
-        run: pod install --repo-update
-        shell: bash
-        
-      - name: Copy Configuration plist
-        run: sh ci_scripts/ci_configuration.sh
-        shell: bash
-
       - name: Download configuration for XCUITest
         if: "${{ inputs.useUrlEnv == true }}"
         run: |
@@ -77,6 +69,14 @@ jobs:
         if: "${{ inputs.useUrlTestData == true }}"
         run: |
           curl -o $PATH_TEST_DATA ${{ secrets.WDIO_IOS_PATH_TEST_DATA }}
+        shell: bash
+
+      - name: Install CocoaPods dependencies
+        run: pod install --repo-update
+        shell: bash
+        
+      - name: Copy Configuration plist
+        run: sh ci_scripts/ci_configuration.sh
         shell: bash
 
       - name: Execute Staging-UI on iPhone 14
