@@ -40,82 +40,97 @@ jobs:
     runs-on: macos-latest
     # needs: clean-up-mobile-data-ui-testing
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          token: ${{secrets.WDIO_ACCESS_TOKEN}}
-          repository: ${{secrets.WDIO_IOS_REPOS}}
-          ref: ${{ secrets.WDIO_IOS_BRANCH }}
+    - name: Install Firebase CLI
+      run:  |
+         # use cURL
+         curl -sL firebase.tools | bash
+         #use npm install -g firebase-tools
+      shell: bash
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v0
+      with:
+        credentials_json: '${{ secrets.WDIO_FIREBASE_SDK_KEY | base64 -Dd }}'
+    - name: Verify Login
+      run: |
+        firebase login:list
+      shell: bash
 
-      - name: Set up SSH Agent and Key
-        uses: tanmancan/action-setup-ssh-agent-key@1.0.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
-          ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
+      # - name: Checkout
+      #   uses: actions/checkout@v3
+      #   with:
+      #     token: ${{secrets.WDIO_ACCESS_TOKEN}}
+      #     repository: ${{secrets.WDIO_IOS_REPOS}}
+      #     ref: ${{ secrets.WDIO_IOS_BRANCH }}
 
-      - name: Download env for XCUITest
-        if: "${{ inputs.useUrlEnv == true }}"
-        run: |
-          curl -o $PATH_ENV '${{ secrets.WDIO_IOS_PATH_ENV }}'
-          status_code=$(curl -s -o /dev/null -w "%{http_code}" '${{ secrets.WDIO_IOS_PATH_ENV }}')
-          if [ "$status_code" -eq 200 ]; then
-            echo "Download Env XCUITest successful!"
-          else
-            echo "Download failed with status code $status_code."
-          fi
-        shell: bash
+      # - name: Set up SSH Agent and Key
+      #   uses: tanmancan/action-setup-ssh-agent-key@1.0.0
+      #   with:
+      #     ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+      #     ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
 
-      - name: Download TestRun for XCUITest
-        if: "${{ inputs.useUrlTestRun == true }}"
-        run: |
-          curl -o $PATH_TEST_SUITE '${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}'
-          status_code=$(curl -s -o /dev/null -w "%{http_code}" '${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}')
-          if [ "$status_code" -eq 200 ]; then
-            echo "Download TestRun successful!"
-          else
-            echo "Download failed with status code $status_code."
-          fi
-        shell: bash
+      # - name: Download env for XCUITest
+      #   if: "${{ inputs.useUrlEnv == true }}"
+      #   run: |
+      #     curl -o $PATH_ENV '${{ secrets.WDIO_IOS_PATH_ENV }}'
+      #     status_code=$(curl -s -o /dev/null -w "%{http_code}" '${{ secrets.WDIO_IOS_PATH_ENV }}')
+      #     if [ "$status_code" -eq 200 ]; then
+      #       echo "Download Env XCUITest successful!"
+      #     else
+      #       echo "Download failed with status code $status_code."
+      #     fi
+      #   shell: bash
 
-      - name: Download TestData for XCUITest
-        if: "${{ inputs.useUrlTestData == true }}"
-        run: |
-          curl -o $PATH_TEST_DATA '${{ secrets.WDIO_IOS_PATH_TEST_DATA }}'
-          status_code=$(curl -s -o /dev/null -w "%{http_code}" '${{ secrets.WDIO_IOS_PATH_TEST_DATA }}')
-          if [ "$status_code" -eq 200 ]; then
-            echo "Download TestData successful!"
-          else
-            echo "Download failed with status code $status_code."
-          fi
-        shell: bash
+      # - name: Download TestRun for XCUITest
+      #   if: "${{ inputs.useUrlTestRun == true }}"
+      #   run: |
+      #     curl -o $PATH_TEST_SUITE '${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}'
+      #     status_code=$(curl -s -o /dev/null -w "%{http_code}" '${{ secrets.WDIO_IOS_PATH_TEST_SUITE }}')
+      #     if [ "$status_code" -eq 200 ]; then
+      #       echo "Download TestRun successful!"
+      #     else
+      #       echo "Download failed with status code $status_code."
+      #     fi
+      #   shell: bash
 
-      - name: Install CocoaPods dependencies
-        run: |
-          pod install --repo-update
-        shell: bash
+      # - name: Download TestData for XCUITest
+      #   if: "${{ inputs.useUrlTestData == true }}"
+      #   run: |
+      #     curl -o $PATH_TEST_DATA '${{ secrets.WDIO_IOS_PATH_TEST_DATA }}'
+      #     status_code=$(curl -s -o /dev/null -w "%{http_code}" '${{ secrets.WDIO_IOS_PATH_TEST_DATA }}')
+      #     if [ "$status_code" -eq 200 ]; then
+      #       echo "Download TestData successful!"
+      #     else
+      #       echo "Download failed with status code $status_code."
+      #     fi
+      #   shell: bash
+
+      # - name: Install CocoaPods dependencies
+      #   run: |
+      #     pod install --repo-update
+      #   shell: bash
         
-      - name: Copy Configuration plist
-        run: sh ci_scripts/ci_configuration.sh
-        shell: bash
+      # - name: Copy Configuration plist
+      #   run: sh ci_scripts/ci_configuration.sh
+      #   shell: bash
 
-      - name: Execute Staging-UI on iPhone 14
-        if: "${{ inputs.list_tests == '' }}"
-        run: |
-          chmod +x ./ci_scripts/run-testsuite.sh
-          ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE"
-        shell: bash
+      # - name: Execute Staging-UI on iPhone 14
+      #   if: "${{ inputs.list_tests == '' }}"
+      #   run: |
+      #     chmod +x ./ci_scripts/run-testsuite.sh
+      #     ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE"
+      #   shell: bash
 
-      - name: Execute custom test Staging-UI on iPhone 14
-        if: "${{ inputs.list_tests != '' }}"
-        run: |
-          chmod +x ./ci_scripts/run-tests.sh
-          ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }}
-        shell: bash
+      # - name: Execute custom test Staging-UI on iPhone 14
+      #   if: "${{ inputs.list_tests != '' }}"
+      #   run: |
+      #     chmod +x ./ci_scripts/run-tests.sh
+      #     ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }}
+      #   shell: bash
 
-      - name: Generate Test Report - iPhone 14 - Record360-Staging-UI
-        if: success() || failure()
-        uses: kishikawakatsumi/xcresulttool@v1
-        with:
-          path: TestResult-iPhone14_Staging-UI.xcresult
-          title: xcresultReport_iPhone14_Record360-Staging-UI
-          show-code-coverage: false
+      # - name: Generate Test Report - iPhone 14 - Record360-Staging-UI
+      #   if: success() || failure()
+      #   uses: kishikawakatsumi/xcresulttool@v1
+      #   with:
+      #     path: TestResult-iPhone14_Staging-UI.xcresult
+      #     title: xcresultReport_iPhone14_Record360-Staging-UI
+      #     show-code-coverage: false
