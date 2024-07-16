@@ -52,7 +52,11 @@ jobs:
         ls
       shell: bash
     - name: Set DATA environment variable
-      run: echo "FIREBASE_SDK_DATA=$(cat decoded_credentials.json)" >> $GITHUB_ENV
+      run: |
+        EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+        echo "FIREBASE_SDK_DATA<<$EOF" >> $GITHUB_ENV
+        cat decoded_credentials.json >> $GITHUB_ENV
+        echo "$EOF" >> $GITHUB_ENV
       shell: bash
     - name: Authenticate to Google Cloud
       uses: google-github-actions/auth@v0
