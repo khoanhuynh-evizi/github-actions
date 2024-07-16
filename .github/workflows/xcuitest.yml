@@ -48,7 +48,8 @@ jobs:
       shell: bash
     - name: Decode Firebase SDK key
       run:  | 
-        echo '${{ secrets.WDIO_FIREBASE_SDK_KEY }}' | base64 -Dd -o decoded_credentials.json
+        echo '${{ secrets.WDIO_FIREBASE_SDK_KEY }}' | base64 -d > decoded_credentials.json
+        ls
         # Set DATA environment variable
         echo "FIREBASE_SDK_DATA=$(cat decoded_credentials.json)" >> $GITHUB_ENV
       shell: bash
