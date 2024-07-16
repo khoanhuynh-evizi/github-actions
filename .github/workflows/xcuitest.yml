@@ -47,12 +47,15 @@ jobs:
          #use npm install -g firebase-tools
       shell: bash
     - name: Decode Firebase SDK key
-      run: echo '${{ secrets.WDIO_FIREBASE_SDK_KEY }}' | base64 -Dd -o decoded_credentials.json
+      run:  | 
+        echo '${{ secrets.WDIO_FIREBASE_SDK_KEY }}' | base64 -Dd -o decoded_credentials.json
+        # Set DATA environment variable
+        echo "FIREBASE_SDK_DATA=$(cat decoded_credentials.json)" >> $GITHUB_ENV
       shell: bash
     - name: Authenticate to Google Cloud
       uses: google-github-actions/auth@v0
       with:
-        credentials_json: decoded_credentials.json
+        credentials_json: $FIREBASE_SDK_DATA
     - name: Verify Login
       run: |
         firebase login:list
