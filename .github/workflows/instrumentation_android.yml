@@ -4,18 +4,15 @@ run-name: ${{ github.actor }} is running Instrument Tests
 on:
   workflow_dispatch:
     inputs:
-      testsuite:
-        description: url path of testsuite
-        required: false
-      env:
-        description: url path of env
+      useUrlTestData:
+        description: Enable download testdata from url
+        type: boolean
         required: false
       instrument_options:
         description: Input subset of tests for testing
         required: false
 env:
-    PATH_TEST_SUITE: app/src/androidTest/assets/testsuite.json
-    PATH_ENV: app/src/androidTest/assets/env.json
+    PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
 
 permissions:
   contents: read
@@ -45,11 +42,14 @@ jobs:
           ref: ${{ secrets.WDIO_BRANCH }}
           submodules: true
 
-      - name: Set Up JDK Environment
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+      - name: Download Test data from firebase
+        if: "${{ inputs.useUrlTestData == true }}"
+        run: |
+          echo "${{ secrets.FIREBASE_SDK_KEY }}" > firebase/firebase-sdk-key.json
+          cd firebase
+          npm install
+          node firebase.js
+          cd ../
 
       - name: Load Google Services File
         env:
@@ -64,6 +64,13 @@ jobs:
           mkdir -p ~/.gradle/
           echo "GRADLE_USER_HOME=${HOME}/.gradle" >> $GITHUB_ENV
           echo "$DATA" | base64 -d > ~/.gradle/gradle.properties
+
+      - name: Set Up JDK Environment
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
@@ -72,15 +79,6 @@ jobs:
 
       - name: Download schema from staging using task:downloadApolloSchema 
         run: ./gradlew Submodule:sdk:downloadApolloSchema --endpoint=${{secrets.WDIO_ENDPOINT}} --schema=${{secrets.WDIO_PATH_SCHEMA}}
-
-      - name: Download Configuration for instrument test
-        if: "${{ inputs.env != '' }}"
-        run: |
-          curl -o $PATH_ENV ${{ inputs.env }}
-      - name: Download Testsuite for instrument test
-        if: "${{ inputs.testsuite != '' }}"
-        run: |
-            curl -o $PATH_TEST_SUITE ${{ inputs.testsuite }}
             
       - name: Assemble tests
         run: ./gradlew assembleStagingDebugAndroidTest
