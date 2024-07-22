@@ -44,7 +44,7 @@ jobs:
           cd record360UITests/Firebase
           npm install
           node firebase.js
-          cd ./../
+          cd ../../
 
       - name: Install CocoaPods dependencies
         run: |
