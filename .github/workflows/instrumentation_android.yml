@@ -25,7 +25,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - version: 33
+          - version: 34
             target: google_apis
             arch: x86_64
             profile: "Nexus 6"
@@ -79,6 +79,9 @@ jobs:
 
       - name: Download schema from staging using task:downloadApolloSchema 
         run: ./gradlew Submodule:sdk:downloadApolloSchema --endpoint=${{secrets.WDIO_ENDPOINT}} --schema=${{secrets.WDIO_PATH_SCHEMA}}
+
+      - name: Build App
+        run: ./gradlew assembleStagingDebugAndroidTest
         
       - name: Enable KVM for linux runners
         if: runner.os == 'Linux'
@@ -109,9 +112,6 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: echo "Generated AVD snapshot for caching."
-
-      - name: Build App
-        run: ./gradlew assembleStagingDebugAndroidTest
           
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
@@ -125,7 +125,6 @@ jobs:
           avd-name: Nexus6_${{ matrix.version }}
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          emulator-boot-timeout: 12000
           script: |
             adb shell wm size
             adb shell wm density
