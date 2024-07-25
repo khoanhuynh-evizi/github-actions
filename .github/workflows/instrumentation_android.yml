@@ -122,6 +122,7 @@ jobs:
           avd-name: Nexus6_${{ matrix.version }}
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
+          emulator-boot-timeout: 12000
           script: |
             adb shell wm size
             adb shell wm density
