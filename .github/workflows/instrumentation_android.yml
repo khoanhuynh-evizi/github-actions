@@ -21,7 +21,7 @@ permissions:
   
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     strategy:
       matrix:
         include:
@@ -54,7 +54,8 @@ jobs:
       - name: Load Google Services File
         env:
           DATA: ${{ secrets.GOOGLE_SERVICES_JSON }}
-        run: echo $DATA | base64 -di > app/google-services.json
+        run: echo $DATA | base64 -Dd > app/google-services.json
+        #run: echo $DATA | base64 -di > app/google-services.json
 
       - name: Load Gradle Properties File
         env:
@@ -63,7 +64,8 @@ jobs:
         run: |
           mkdir -p ~/.gradle/
           echo "GRADLE_USER_HOME=${HOME}/.gradle" >> $GITHUB_ENV
-          echo "$DATA" | base64 -d > ~/.gradle/gradle.properties
+          echo "$DATA" | base64 -Dd > ~/.gradle/gradle.properties
+          #echo "$DATA" | base64 -d > ~/.gradle/gradle.properties
 
       - name: Set Up JDK Environment
         uses: actions/setup-java@v4
