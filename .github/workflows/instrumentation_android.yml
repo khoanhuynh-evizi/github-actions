@@ -60,7 +60,7 @@ jobs:
       - name: Load Google Services File
         env:
           DATA: ${{ secrets.GOOGLE_SERVICES_JSON }}
-        run: echo $DATA | base64 -Dd > app/google-services.json
+        run: echo $DATA | base64 -hDd > app/google-services.json
         #run: echo $DATA | base64 -di > app/google-services.json
 
       - name: Load Gradle Properties File
@@ -70,7 +70,7 @@ jobs:
         run: |
           mkdir -p ~/.gradle/
           echo "GRADLE_USER_HOME=${HOME}/.gradle" >> $GITHUB_ENV
-          echo "$DATA" | base64 -Dd > ~/.gradle/gradle.properties
+          echo "$DATA" | base64 -hDd > ~/.gradle/gradle.properties
           #echo "$DATA" | base64 -d > ~/.gradle/gradle.properties
 
       - name: Set Up JDK Environment
@@ -160,7 +160,7 @@ jobs:
             ./scripts/run-tests.sh --instrument-options=${{ inputs.instrument_options }}
             
       - name: Upload reports on API ${{ matrix.version }}
-        if: always()
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: test-suite-${{ matrix.version }}
@@ -169,7 +169,7 @@ jobs:
             app/build/reports/androidTests/connected/**
       - name: Generate reports on API ${{ matrix.version }}
         uses: dorny/test-reporter@v1
-        if: always()
+        if: success() || failure()
         with:
           name: Report Testsuite on API ${{ matrix.version }}
           path: app/build/outputs/*/connected/**/flavors/**/*.xml
