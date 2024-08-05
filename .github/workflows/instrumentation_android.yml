@@ -25,16 +25,16 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-13
-            version: 34
-            target: google_apis
-            arch: x86_64
-            profile: "Nexus 6"
-          # - os: ubuntu-latest
+          # - os: macos-13
           #   version: 34
           #   target: google_apis
           #   arch: x86_64
           #   profile: "Nexus 6"
+          - os: ubuntu-latest
+            version: 34
+            target: google_apis
+            arch: x86_64
+            profile: "Nexus 6"
     steps:
 
       # - name: Trigger clean-up data ui testing
