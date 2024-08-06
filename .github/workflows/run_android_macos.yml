@@ -77,30 +77,30 @@ jobs:
       - name: Download schema from staging using task:downloadApolloSchema 
         run: ./gradlew Submodule:sdk:downloadApolloSchema --endpoint=${{secrets.WDIO_ENDPOINT}} --schema=${{secrets.WDIO_PATH_SCHEMA}}
 
-      - name: Build App
-        run: ./gradlew assembleStagingDebugAndroidTest
+      # - name: Build App
+      #   run: ./gradlew assembleStagingDebugAndroidTest
         
-      - name: AVD cache
-        uses: actions/cache@v4
-        id: avd-cache
-        with:
-          path: |
-            ~/.android/avd/*
-            ~/.android/adb*
-          key: avd-${{ matrix.version }}-${{ matrix.os }}-${{ matrix.target }}
+      # - name: AVD cache
+      #   uses: actions/cache@v4
+      #   id: avd-cache
+      #   with:
+      #     path: |
+      #       ~/.android/avd/*
+      #       ~/.android/adb*
+      #     key: avd-${{ matrix.version }}-${{ matrix.os }}-${{ matrix.target }}
           
-      - name: Create AVD and generate snapshot for caching
-        if: steps.avd-cache.outputs.cache-hit != 'true'
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ matrix.version }}
-          target: ${{ matrix.target }}
-          profile: ${{ matrix.profile }}
-          arch: ${{ matrix.arch }}
-          avd-name: Nexus6_${{ matrix.version }}
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          disable-animations: false
-          script: echo "Generated AVD snapshot for caching."
+      # - name: Create AVD and generate snapshot for caching
+      #   if: steps.avd-cache.outputs.cache-hit != 'true'
+      #   uses: reactivecircus/android-emulator-runner@v2
+      #   with:
+      #     api-level: ${{ matrix.version }}
+      #     target: ${{ matrix.target }}
+      #     profile: ${{ matrix.profile }}
+      #     arch: ${{ matrix.arch }}
+      #     avd-name: Nexus6_${{ matrix.version }}
+      #     emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+      #     disable-animations: false
+      #     script: echo "Generated AVD snapshot for caching."
           
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
@@ -111,9 +111,6 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
-          force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          disable-animations: true
           script: |
             adb shell wm size
             adb shell wm density
@@ -129,9 +126,6 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
-          force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          disable-animations: true
           script: |
             adb shell wm size
             adb shell wm density
