@@ -1,4 +1,4 @@
-name: run Instrument Tests
+name: run Android tests Mac os
 run-name: ${{ github.actor }} is running Instrument Tests
 
 on:
