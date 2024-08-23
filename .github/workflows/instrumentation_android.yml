@@ -25,29 +25,20 @@ jobs:
     strategy:
       matrix:
         include:
-          # - os: macos-13
-          #   version: 34
-          #   target: google_apis
-          #   arch: x86_64
-          #   profile: "Nexus 6"
           - os: ubuntu-latest
             version: 34
             target: google_apis
             arch: x86_64
             profile: "Nexus 6"
     steps:
-
-      # - name: Trigger clean-up data ui testing
-      #   run: |
-      #     curl -XPOST -u "khoanhuynh-evizi:${{secrets.WDIO_ACCESS_TOKEN}}" -H "Accept: application/vnd.github.everest-preview+json" -H "Content-Type: application/json" https://api.github.com/repos/Record360/webdriver-io/dispatches --data '{"event_type": "cleanup_data", "client_payload": {"company": "101", "framework": "android"}}'
-      - name: checkout
+      - name: Checkout
         uses: actions/checkout@v3
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_REPOS}}
           ref: ${{ secrets.WDIO_BRANCH }}
           submodules: true
-
+          
       - name: Download Test data from firebase
         if: "${{ inputs.useUrlTestData == true }}"
         run: |
@@ -61,7 +52,6 @@ jobs:
         env:
           DATA: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: echo $DATA | base64 --decode > app/google-services.json
-        #run: echo $DATA | base64 -di > app/google-services.json
 
       - name: Load Gradle Properties File
         env:
@@ -71,7 +61,6 @@ jobs:
           mkdir -p ~/.gradle/
           echo "GRADLE_USER_HOME=${HOME}/.gradle" >> $GITHUB_ENV
           echo "$DATA" | base64 --decode > ~/.gradle/gradle.properties
-          #echo "$DATA" | base64 -d > ~/.gradle/gradle.properties
 
       - name: Set Up JDK Environment
         uses: actions/setup-java@v4
@@ -168,6 +157,7 @@ jobs:
           path: |
             app/build/outputs/*/connected/*
             app/build/reports/androidTests/connected/**
+            
       - name: Generate reports on API ${{ matrix.version }}
         uses: dorny/test-reporter@v1
         if: success() || failure()
