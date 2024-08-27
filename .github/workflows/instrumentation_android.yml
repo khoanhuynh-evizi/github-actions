@@ -27,8 +27,8 @@ jobs:
         include:
           - os: ubuntu-latest
             version: 30
-            arch: x86_64
-            target: google_apis
+            arch: x86
+            target: aosp_atd
             profile: Nexus 6
           # - os: ubuntu-latest
           #   version: 34
@@ -110,6 +110,9 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
+          channel: canary
+          cores: 2
+          sdcard-path-or-size: 100M
           emulator-boot-timeout: 12000
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
@@ -125,6 +128,9 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
+          channel: canary
+          cores: 2
+          sdcard-path-or-size: 100M
           force-avd-creation: false
           emulator-boot-timeout: 12000
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
@@ -144,6 +150,9 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
+          channel: canary
+          cores: 2
+          sdcard-path-or-size: 100M
           force-avd-creation: false
           emulator-boot-timeout: 12000
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
