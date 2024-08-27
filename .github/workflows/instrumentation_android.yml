@@ -111,7 +111,9 @@ jobs:
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
           cores: 2
-          sdcard-path-or-size: 100M
+          sdcard-path-or-size: 2000M
+          ram-size: 2048M
+          heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
@@ -128,7 +130,9 @@ jobs:
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
           cores: 2
-          sdcard-path-or-size: 100M
+          sdcard-path-or-size: 2000M
+          ram-size: 2048M
+          heap-size: 512M
           force-avd-creation: false
           emulator-boot-timeout: 12000
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
@@ -149,7 +153,9 @@ jobs:
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
           cores: 2
-          sdcard-path-or-size: 100M
+          sdcard-path-or-size: 2000M
+          ram-size: 2048M
+          heap-size: 512M
           force-avd-creation: false
           emulator-boot-timeout: 12000
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
