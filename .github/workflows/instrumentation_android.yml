@@ -43,6 +43,20 @@ jobs:
           repository: ${{secrets.WDIO_REPOS}}
           ref: ${{ secrets.WDIO_BRANCH }}
           submodules: true
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux'
+        with:
+          tool-cache: false
+          # all of these default to true, but feel free to set to
+          # "false" if necessary for your workflow
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
           
       - name: Download Test data from firebase
         if: "${{ inputs.useUrlTestData == true }}"
@@ -74,7 +88,7 @@ jobs:
           java-version: '17'
           
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
@@ -134,7 +148,6 @@ jobs:
           ram-size: 2048M
           heap-size: 512M
           force-avd-creation: false
-          emulator-boot-timeout: 12000
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
@@ -157,7 +170,6 @@ jobs:
           ram-size: 2048M
           heap-size: 512M
           force-avd-creation: false
-          emulator-boot-timeout: 12000
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
