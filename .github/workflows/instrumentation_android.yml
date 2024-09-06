@@ -30,11 +30,6 @@ jobs:
             arch: x86_64
             target: google_apis
             profile: Nexus 6
-          # - os: ubuntu-latest
-          #   version: 34
-          #   target: google_apis
-          #   arch: x86_64
-          #   profile: "Nexus 6"
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -43,20 +38,6 @@ jobs:
           repository: ${{secrets.WDIO_REPOS}}
           ref: ${{ secrets.WDIO_BRANCH }}
           submodules: true
-
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        if: runner.os == 'Linux'
-        with:
-          tool-cache: false
-          # all of these default to true, but feel free to set to
-          # "false" if necessary for your workflow
-          android: false
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
           
       - name: Download Test data from firebase
         if: "${{ inputs.useUrlTestData == true }}"
