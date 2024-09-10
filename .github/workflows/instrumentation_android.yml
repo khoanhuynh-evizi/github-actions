@@ -32,7 +32,7 @@ jobs:
             profile: Nexus 6
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_REPOS}}
@@ -76,9 +76,6 @@ jobs:
 
       - name: Download schema from staging using task:downloadApolloSchema 
         run: ./gradlew Submodule:sdk:downloadApolloSchema --endpoint=${{secrets.WDIO_ENDPOINT}} --schema=${{secrets.WDIO_PATH_SCHEMA}}
-
-      - name: Build App
-        run: ./gradlew assembleStagingDebugAndroidTest
         
       - name: Enable KVM for linux runners
         if: runner.os == 'Linux'
@@ -106,7 +103,7 @@ jobs:
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
           cores: 2
-          sdcard-path-or-size: 2000M
+          sdcard-path-or-size: 1024M
           ram-size: 2048M
           heap-size: 512M
           emulator-boot-timeout: 12000
@@ -114,6 +111,27 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: echo "Generated AVD snapshot for caching."
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux'
+        with:
+          tool-cache: false
+          # all of these default to true, but feel free to set to
+          # "false" if necessary for your workflow
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+
+      - name: Build App
+        run: ./gradlew assembleStagingDebug
+        
+      - name: Build Test App
+        run: ./gradlew assembleStagingDebugAndroidTest
           
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
@@ -125,7 +143,7 @@ jobs:
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
           cores: 2
-          sdcard-path-or-size: 2000M
+          sdcard-path-or-size: 1024MB
           ram-size: 2048M
           heap-size: 512M
           force-avd-creation: false
