@@ -35,7 +35,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
-          repository: ${{secrets.WDIO_REPOS}}
+          repository: ${{secrets.WDIO_ANDROID_REPOS}}
           ref: ${{ secrets.WDIO_BRANCH }}
           submodules: true
           
