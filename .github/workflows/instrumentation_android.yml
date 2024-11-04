@@ -36,7 +36,7 @@ jobs:
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_ANDROID_REPOS}}
-          ref: ${{ secrets.WDIO_BRANCH }}
+          ref: ${{ vars.WDIO_ANDROID_BRANCH }}
           submodules: true
           
       - name: Download Test data from firebase
