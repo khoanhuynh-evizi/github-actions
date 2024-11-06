@@ -17,7 +17,7 @@ jobs:
       with:
         repository: ${{ secrets.WDIO_REPOS }}
         token: ${{ secrets.WDIO_ACCESS_TOKEN }}
-        ref: fe-2416
+        ref: ins-399
     - name: Use Node.js 18.x
       uses: actions/setup-node@v4
       with:
@@ -29,7 +29,7 @@ jobs:
       uses: StarUbiquitous/command-output@v1.0.1
       id: wdio
       with:
-        run: yarn test:local --suite="Smoke Test"
+        run: npx cross-env RUNNER="local" CLOUD_SERVICE_USERNAME="" CLOUD_SERVICE_KEY="" RELEASE_VERSION="" wdio run ./config/wdio.local.conf.ts --spec src/specs/inspections/inspections.ins-399.spec.ts
       env:
         CAPABILITIES: chrome
         MAX_INSTANCES: 2
