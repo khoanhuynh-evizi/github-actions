@@ -29,7 +29,7 @@ jobs:
       uses: StarUbiquitous/command-output@v1.0.1
       id: wdio
       with:
-        run: npx cross-env RUNNER="local" CLOUD_SERVICE_USERNAME="" CLOUD_SERVICE_KEY="" RELEASE_VERSION="" wdio run ./config/wdio.local.conf.ts --spec src/specs/inspections/inspections.ins-399.spec.ts
+        run: npx cross-env RUNNER="local" CLOUD_SERVICE_USERNAME="" CLOUD_SERVICE_KEY="" RELEASE_VERSION="" wdio run ./config/wdio.local.conf.ts --spec src/specs/inspections/inspections.ins-36.spec.ts --spec src/specs/inspections/inspections.ins-397.spec.ts --spec src/specs/inspections/inspections.ins-399.spec.ts
       env:
         CAPABILITIES: chrome
         MAX_INSTANCES: 2
