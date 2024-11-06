@@ -42,6 +42,10 @@ jobs:
         if [ !  -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
           exit 1
         fi
+    - run: |
+        ls
+        pwd
+        ls tmp
     - uses: simple-elf/allure-report-action@v1.6
       if: always()
       with:
