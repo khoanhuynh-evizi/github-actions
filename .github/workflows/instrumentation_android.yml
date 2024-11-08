@@ -75,7 +75,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Download schema from staging using task:downloadApolloSchema 
-        run: ./gradlew Submodule:sdk:downloadApolloSchema --endpoint=${{secrets.WDIO_ENDPOINT}} --schema=${{secrets.WDIO_PATH_SCHEMA}}  --header=${{secrets.WDIO_ANDROID_SCHEMA_HEADER}} 
+        run: ./gradlew Submodule:sdk:downloadApolloSchema --endpoint=${{secrets.WDIO_ENDPOINT}} --schema=${{secrets.WDIO_PATH_SCHEMA}}  --header="${{secrets.WDIO_ANDROID_SCHEMA_HEADER}}"
         
       - name: Enable KVM for linux runners
         if: runner.os == 'Linux'
