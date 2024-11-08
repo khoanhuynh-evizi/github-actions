@@ -113,12 +113,13 @@ jobs:
           script: echo "Generated AVD snapshot for caching."
 
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe # v1.0.0
         if: runner.os == 'Linux'
         with:
           tool-cache: false
           # all of these default to true, but feel free to set to
           # "false" if necessary for your workflow
+          # https://github.com/jlumbroso/free-disk-space/pull/26
           android: false
           dotnet: true
           haskell: true
