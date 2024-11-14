@@ -23,10 +23,6 @@ jobs:
       with:
         node-version: 18.18.2
         cache: 'npm'
-    - uses: browser-actions/setup-chrome@v1
-      with:
-        chrome-version: 131
-        install-chromedriver: true
     - run: |
         yarn install --frozen-lockfile
     - name: Run webdriver-io tests
