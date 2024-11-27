@@ -29,8 +29,8 @@ jobs:
       uses: StarUbiquitous/command-output@v1.0.1
       id: wdio
       with:
-        run: npx cross-env RUNNER="local" CLOUD_SERVICE_USERNAME="" CLOUD_SERVICE_KEY="" RELEASE_VERSION="" wdio run ./config/wdio.local.conf.ts --spec src/specs/inspections/inspections.ins-53.spec.ts
-        # run: yarn test:local --suite="Smoke Test"
+        # run: npx cross-env RUNNER="local" CLOUD_SERVICE_USERNAME="" CLOUD_SERVICE_KEY="" RELEASE_VERSION="" wdio run ./config/wdio.local.conf.ts --spec src/specs/inspections/inspections.ins-53.spec.ts
+        run: yarn test:local --suite="Smoke Test"
       env:
         CAPABILITIES: chrome
         MAX_INSTANCES: 2
