@@ -2,7 +2,7 @@ name: Smoke Test (-s)
 
 on:
   schedule:
-    - cron: '30 23 * * *' # 6h30 every night UTC+7
+    - cron: '30 23 * * 1-5' # 6h30 tối từ thứ Hai đến thứ Sáu (UTC+7)
   workflow_dispatch:
 
 concurrency:
