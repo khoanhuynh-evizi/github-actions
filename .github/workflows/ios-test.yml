@@ -46,6 +46,11 @@ jobs:
           node firebase.js
           cd ../../
 
+      - name: Setup Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '15.4'
+          
       - name: Install CocoaPods dependencies
         run: |
           pod install --repo-update
