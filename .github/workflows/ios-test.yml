@@ -60,6 +60,9 @@ jobs:
         run: sh ci_scripts/ci_configuration.sh
         shell: bash
 
+      - name: List available simulators
+        run: xcrun simctl list devices
+      
       - name: Execute Staging-UI on iPhone 15
         env:
           SIMCTL_CHILD_HARDWARE_KEYBOARD: "0"
