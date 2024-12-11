@@ -10,6 +10,11 @@ on:
       list_tests:
         description: Input subset of tests for testing
         required: false
+      ios-version:
+        description: 'iOS Version (e.g., 17.4)'
+        required: false
+        default: '17.4'
+        type: string
 env:
     PATH_TEST_SUITE: record360UITests/Resources/testRun.json
 
@@ -21,14 +26,9 @@ permissions:
 jobs:
   build:
     name: Test UI on Simulator
-    runs-on: macos-13
+    runs-on: macos-latest
     # needs: clean-up-mobile-data-ui-testing
     steps:
-      - name: System Info
-        run: |
-          uname -m
-          sw_vers
-          xcodebuild -version
       - name: Checkout
         uses: actions/checkout@v3
         with:
@@ -65,20 +65,20 @@ jobs:
       
       - name: Execute Staging-UI on iPhone 15
         env:
-          SIMCTL_CHILD_HARDWARE_KEYBOARD: "0"
+          IOS_VERSION: ${{ inputs.ios-version || '17.4' }}
         if: "${{ inputs.list_tests == '' }}"
         run: |
           chmod +x ./ci_scripts/run-testsuite.sh
-          ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE"
+          ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE" --iOSVersion="${IOS_VERSION}"
         shell: bash
 
       - name: Execute custom test Staging-UI on iPhone 15
         env:
-          SIMCTL_CHILD_HARDWARE_KEYBOARD: "0"
+          IOS_VERSION: ${{ inputs.ios-version || '17.4' }}
         if: "${{ inputs.list_tests != '' }}"
         run: |
           chmod +x ./ci_scripts/run-tests.sh
-          ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }}
+          ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }} --iOSVersion="${IOS_VERSION}"
         shell: bash
 
       - name: Generate Test Report - iPhone 15 - Record360-Staging-UI
