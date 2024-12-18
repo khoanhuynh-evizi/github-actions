@@ -11,9 +11,9 @@ on:
         description: Input subset of tests for testing
         required: false
       ios-version:
-        description: 'iOS Version (e.g., 17.4)'
+        description: 'iOS Version (e.g., 17.2)'
         required: false
-        default: '17.4'
+        default: '17.2'
         type: string
 env:
     PATH_TEST_SUITE: record360UITests/Resources/testRun.json
@@ -26,7 +26,7 @@ permissions:
 jobs:
   build:
     name: Test UI on Simulator
-    runs-on: macos-latest
+    runs-on: macos-13
     # needs: clean-up-mobile-data-ui-testing
     steps:
       - name: Checkout
@@ -34,7 +34,7 @@ jobs:
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_IOS_REPOS}}
-          ref: mob-1893 # ${{ secrets.WDIO_IOS_BRANCH }}
+          ref: mob-1895 # ${{ secrets.WDIO_IOS_BRANCH }}
 
       - name: Set up SSH Agent and Key
         uses: tanmancan/action-setup-ssh-agent-key@1.0.0
