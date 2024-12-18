@@ -71,9 +71,6 @@ jobs:
       - name: List available simulators
         run: xcrun simctl list devices
 
-      - name: Create reports directory
-        run: mkdir -p test-reports
-
       - name: Execute Staging-UI on iPhone 15
         env:
           IOS_VERSION: ${{ inputs.ios-version || '17.4' }}
@@ -91,13 +88,6 @@ jobs:
           chmod +x ./ci_scripts/run-tests.sh
           ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }} --iOSVersion="${IOS_VERSION}"
         shell: bash
-
-      - name: Upload HTML test report
-        if: success() || failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-report-html
-          path: test-reports/
 
       - name: Generate Test Report - iPhone 15 - Record360-Staging-UI
         if: success() || failure()
