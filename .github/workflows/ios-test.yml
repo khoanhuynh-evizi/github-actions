@@ -3,6 +3,13 @@ run-name: ${{ github.actor }} is XCUITests
 on:
   workflow_dispatch:    
     inputs:
+      runner_type:
+        description: 'Select the type of runner'
+        required: true
+        default: 'macos-latest'
+        options:
+          - macos-latest
+          - macos-13
       useUrlTestData:
         description: Enable download testdata from url
         type: boolean
@@ -26,7 +33,7 @@ permissions:
 jobs:
   build:
     name: Test UI on Simulator
-    runs-on: macos-latest
+    runs-on: ${{ github.event.inputs.runner_type }}
     # needs: clean-up-mobile-data-ui-testing
     steps:
       - name: Checkout
