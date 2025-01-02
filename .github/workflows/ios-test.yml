@@ -42,7 +42,7 @@ jobs:
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_IOS_REPOS}}
-          ref: mob-1902 # ${{ secrets.WDIO_IOS_BRANCH }}
+          ref: mob-1903 # ${{ secrets.WDIO_IOS_BRANCH }}
 
       - name: Set up SSH Agent and Key
         uses: tanmancan/action-setup-ssh-agent-key@1.0.0
