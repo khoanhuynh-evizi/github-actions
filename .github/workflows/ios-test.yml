@@ -71,6 +71,10 @@ jobs:
       - name: List available simulators
         run: xcrun simctl list devices
 
+      - name: Install xcpretty
+        run: |
+          gem install xcpretty -N -v 0.3.0
+
       - name: Execute Staging-UI on iPhone 15
         env:
           IOS_VERSION: ${{ inputs.ios-version || '17.4' }}
