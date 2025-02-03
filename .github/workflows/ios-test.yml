@@ -71,10 +71,21 @@ jobs:
       - name: List available simulators
         run: xcrun simctl list devices
 
-      - name: Install xcpretty
+      - name: Install and verify xcpretty
         run: |
-          gem uninstall xcpretty --all --executables
-          gem install xcpretty -N -v 0.3.0
+          # Check Ruby environment
+          echo "Ruby version: $(ruby -v)"
+          echo "Gem paths: $(gem env)"
+          
+          # Remove all versions
+          sudo gem uninstall xcpretty --all --executables || true
+          
+          # Install specific version
+          sudo gem install xcpretty -N -v 0.3.0
+          
+          # Verify installation
+          gem list xcpretty
+          xcpretty --version
 
       - name: Execute Staging-UI on iPhone 15
         env:
