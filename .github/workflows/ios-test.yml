@@ -71,21 +71,24 @@ jobs:
       - name: List available simulators
         run: xcrun simctl list devices
 
-      - name: Install and verify xcpretty
+      - name: Install xcpretty 0.3.0
         run: |
-          # Check Ruby environment
-          echo "Ruby version: $(ruby -v)"
-          echo "Gem paths: $(gem env)"
-          
-          # Remove all versions
+          # Uninstall all versions first
           sudo gem uninstall xcpretty --all --executables || true
           
           # Install specific version
           sudo gem install xcpretty -N -v 0.3.0
           
-          # Verify installation
-          gem list xcpretty
-          xcpretty --version
+          # Add xcpretty version to Podfile if not already there
+          if ! grep -q "gem 'xcpretty', '0.3.0'" Podfile; then
+            echo "gem 'xcpretty', '0.3.0'" >> Podfile
+          fi
+          
+          # Install pods
+          pod install
+          
+          # Use bundle exec to ensure correct version
+          bundle exec xcpretty --version
 
       - name: Execute Staging-UI on iPhone 15
         env:
