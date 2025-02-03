@@ -73,21 +73,14 @@ jobs:
 
       - name: Install xcpretty 0.3.0
         run: |
-          # Uninstall all versions first
-          sudo gem uninstall xcpretty --all --executables || true
+          # Create temporary Gemfile just for xcpretty
+          echo "source 'https://rubygems.org'" > Gemfile
+          echo "gem 'xcpretty', '0.3.0'" >> Gemfile
           
-          # Install specific version
-          sudo gem install xcpretty -N -v 0.3.0
+          # Install using bundler
+          bundle install
           
-          # Add xcpretty version to Podfile if not already there
-          if ! grep -q "gem 'xcpretty', '0.3.0'" Podfile; then
-            echo "gem 'xcpretty', '0.3.0'" >> Podfile
-          fi
-          
-          # Install pods
-          pod install
-          
-          # Use bundle exec to ensure correct version
+          # Verify version
           bundle exec xcpretty --version
 
       - name: Execute Staging-UI on iPhone 15
