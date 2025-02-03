@@ -73,6 +73,7 @@ jobs:
 
       - name: Install xcpretty
         run: |
+          gem uninstall xcpretty --all --executables
           gem install xcpretty -N -v 0.3.0
 
       - name: Execute Staging-UI on iPhone 15
