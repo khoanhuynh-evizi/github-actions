@@ -100,11 +100,3 @@ jobs:
           chmod +x ./ci_scripts/run-tests.sh
           ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }} --iOSVersion="${IOS_VERSION}"
         shell: bash
-
-      - name: Generate Test Report - iPhone 15 - Record360-Staging-UI
-        if: success() || failure()
-        uses: kishikawakatsumi/xcresulttool@v1
-        with:
-          path: TestResult-iPhone15_Staging-UI.xcresult
-          title: xcresultReport_iPhone15_Record360-Staging-UI
-          show-code-coverage: false
