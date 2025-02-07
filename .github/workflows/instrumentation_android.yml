@@ -11,6 +11,11 @@ on:
       instrument_options:
         description: Input subset of tests for testing
         required: false
+      sdk-version:
+        description: 'Android SDK Version (e.g., 35)'
+        required: false
+        default: '35'
+        type: string
 env:
     PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
 
@@ -26,7 +31,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            version: 35
+            version: ${{ inputs.sdk-version || '35' }}
             arch: x86_64
             target: google_apis
             profile: Nexus 6
