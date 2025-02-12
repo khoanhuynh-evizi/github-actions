@@ -42,7 +42,7 @@ jobs:
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_IOS_REPOS}}
-          ref: mob-1962 # ${{ secrets.WDIO_IOS_BRANCH }}
+          ref: auto_latest # ${{ secrets.WDIO_IOS_BRANCH }}
 
       - name: Set up SSH Agent and Key
         uses: tanmancan/action-setup-ssh-agent-key@1.0.0
@@ -101,10 +101,9 @@ jobs:
           ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }} --iOSVersion="${IOS_VERSION}"
         shell: bash
 
-      - name: Generate Test Report - iPhone 15 - Record360-Staging-UI
-        if: success() || failure()
-        uses: kishikawakatsumi/xcresulttool@v1
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          path: TestResult-iPhone15_Staging-UI.xcresult
-          title: xcresultReport_iPhone15_Record360-Staging-UI
-          show-code-coverage: false
+          name: UI Test Result
+          path: TestResult.xcresult
+          retention-days: 7
