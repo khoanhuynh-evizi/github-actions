@@ -100,7 +100,7 @@ jobs:
           
       - name: Create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@v2.33.0
         with:
           api-level: ${{ matrix.version }}
           target: ${{ matrix.target }}
@@ -141,7 +141,7 @@ jobs:
           
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@v2.33.0
         with:
           api-level: ${{ matrix.version }}
           target: ${{ matrix.target }}
@@ -163,7 +163,7 @@ jobs:
             
       - name: Execute custom instrument test ${{ inputs.instrument_options }} on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options != '' }}"
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@v2.33.0
         with:
           api-level: ${{ matrix.version }}
           target: ${{ matrix.target }}
