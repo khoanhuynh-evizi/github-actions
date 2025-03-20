@@ -19,9 +19,9 @@ on:
         description: Input subset of tests for testing
         required: false
       ios-version:
-        description: 'iOS Version (e.g., 17.4)'
+        description: 'iOS Version (e.g., 17.5)'
         required: false
-        default: '17.4'
+        default: '17.5'
         type: string
 env:
     PATH_TEST_SUITE: record360UITests/Resources/testRun.json
@@ -72,11 +72,11 @@ jobs:
       - name: List available simulators
         run: xcrun simctl list devices
 
-      - name: Install xcpretty 0.3.0
+      - name: Install xcpretty from https://github.com/xcpretty
         run: |
           # Create temporary Gemfile just for xcpretty
           echo "source 'https://rubygems.org'" > Gemfile
-          echo "gem 'xcpretty', '0.3.0'" >> Gemfile
+          echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git', branch: 'master'" >> Gemfile
           
           # Install using bundler
           bundle install
@@ -86,7 +86,7 @@ jobs:
 
       - name: Execute Staging-UI on iPhone 15
         env:
-          IOS_VERSION: ${{ inputs.ios-version || '17.4' }}
+          IOS_VERSION: ${{ inputs.ios-version || '17.5' }}
         if: "${{ inputs.list_tests == '' }}"
         run: |
           chmod +x ./ci_scripts/run-testsuite.sh
@@ -95,7 +95,7 @@ jobs:
 
       - name: Execute custom test Staging-UI on iPhone 15
         env:
-          IOS_VERSION: ${{ inputs.ios-version || '17.4' }}
+          IOS_VERSION: ${{ inputs.ios-version || '17.5' }}
         if: "${{ inputs.list_tests != '' }}"
         run: |
           chmod +x ./ci_scripts/run-tests.sh
