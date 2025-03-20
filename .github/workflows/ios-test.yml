@@ -62,6 +62,7 @@ jobs:
       - name: Install CocoaPods dependencies
         run: |
           pod install --repo-update
+          pod update Record360SDK
         shell: bash
         
       - name: Copy Configuration plist
