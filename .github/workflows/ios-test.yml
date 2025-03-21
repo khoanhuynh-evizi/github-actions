@@ -23,6 +23,11 @@ on:
         required: false
         default: '17.5'
         type: string
+      simulator-name:
+        description: 'Simulator Name'
+        required: false
+        default: 'iPhone 15'
+        type: string
 env:
     PATH_TEST_SUITE: record360UITests/Resources/testRun.json
 
@@ -69,9 +74,6 @@ jobs:
         run: sh ci_scripts/ci_configuration.sh
         shell: bash
 
-      - name: List available simulators
-        run: xcrun simctl list devices
-
       - name: Install xcpretty from https://github.com/xcpretty
         run: |
           # Create temporary Gemfile just for xcpretty
@@ -84,22 +86,49 @@ jobs:
           # Verify version
           bundle exec xcpretty --version
 
-      - name: Execute Staging-UI on iPhone 15
+      - name: Boot and launch simulator
         env:
           IOS_VERSION: ${{ inputs.ios-version || '17.5' }}
+          SIMULATOR_NAME: ${{ inputs.simulator-name || 'iPhone 15' }}
+        run: |
+          # Create and boot simulator with the specific iOS version
+          DEVICE_ID=$(xcrun simctl create "TestDevice" "$SIMULATOR_NAME" "iOS-$IOS_VERSION-simulator" || xcrun simctl create "TestDevice" "$SIMULATOR_NAME" "iOS-${IOS_VERSION/./-}-simulator")
+          echo "Created simulator with ID: $DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID"
+          
+          # Wait for simulator to be fully booted
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          echo "Simulator booted successfully"
+          
+          # Configure status bar
+          xcrun simctl status_bar "$DEVICE_ID" override --time "12:00" --dataNetwork wifi --wifiMode active --cellularMode active
+          echo "Status bar configured"
+          
+          # Prepare simulator for notifications
+          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.notificationcenterui.widget showInLockScreen -bool true
+          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.SpringBoard FBSystemAlertsPolicyEnabled -bool NO
+          
+          # Restart SpringBoard to apply settings
+          xcrun simctl spawn "$DEVICE_ID" launchctl stop com.apple.SpringBoard
+          xcrun simctl spawn "$DEVICE_ID" launchctl start com.apple.SpringBoard
+          sleep 15
+          echo "SpringBoard restarted"
+          
+          # Store simulator ID in github env
+          echo "SIMULATOR_ID=$DEVICE_ID" >> $GITHUB_ENV
+
+      - name: Execute Staging-UI
         if: "${{ inputs.list_tests == '' }}"
         run: |
           chmod +x ./ci_scripts/run-testsuite.sh
-          ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE" --iOSVersion="${IOS_VERSION}"
+          ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE" --deviceId="${SIMULATOR_ID}"
         shell: bash
 
-      - name: Execute custom test Staging-UI on iPhone 15
-        env:
-          IOS_VERSION: ${{ inputs.ios-version || '17.5' }}
+      - name: Execute custom test Staging-UI
         if: "${{ inputs.list_tests != '' }}"
         run: |
           chmod +x ./ci_scripts/run-tests.sh
-          ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }} --iOSVersion="${IOS_VERSION}"
+          ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }} --deviceId="${SIMULATOR_ID}"
         shell: bash
 
       - uses: actions/upload-artifact@v4
