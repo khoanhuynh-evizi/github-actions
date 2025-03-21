@@ -72,8 +72,8 @@ jobs:
           echo "Simulator booted successfully"
           
           # Configure status bar
-          xcrun simctl status_bar "$DEVICE_ID" override --time "12:00" --dataNetwork wifi --wifiMode active --cellularMode active
-          echo "Status bar configured"
+          # xcrun simctl status_bar "$DEVICE_ID" override --time "12:00" --dataNetwork wifi --wifiMode active --cellularMode active
+          # echo "Status bar configured"
           
           # Prepare simulator for notifications
           xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.notificationcenterui.widget showInLockScreen -bool true
