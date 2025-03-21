@@ -70,18 +70,6 @@ jobs:
           # Wait for simulator to be fully booted
           xcrun simctl bootstatus "$DEVICE_ID" -b
           echo "Simulator booted successfully"
-          # Set current time and status bar
-          CURRENT_TIME="2025-03-21T07:00:01+0000"
-          xcrun simctl status_bar "$DEVICE_ID" override \
-            --time "$CURRENT_TIME" \
-            --dataNetwork "wifi" \
-            --wifiMode "active" \
-            --wifiBars "3" \
-            --cellularMode "active" \
-            --cellularBars "4" \
-            --batteryLevel "100" \
-            --batteryState "charged"
-          echo "Status bar configured"
           
           # Prepare simulator for notifications
           # Enable notifications in system settings
