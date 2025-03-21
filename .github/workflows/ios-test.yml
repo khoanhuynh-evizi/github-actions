@@ -77,7 +77,11 @@ jobs:
           # echo "Status bar configured"
           
           # Prepare simulator for notifications
-          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.notificationcenterui.widget showInLockScreen -bool true
+          # Enable notifications in system settings
+          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.notificationcenterui NotificationWillShowInLockScreen -bool true
+          
+          # Configure notification settings for the simulator
+          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.Preferences AutoAcceptAlerts -bool true
           xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.springboard FBSystemAlertsPolicyEnabled -bool false
           
           # Restart SpringBoard to apply settings
