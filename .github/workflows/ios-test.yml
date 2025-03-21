@@ -91,8 +91,21 @@ jobs:
           IOS_VERSION: ${{ inputs.ios-version || '17.5' }}
           SIMULATOR_NAME: ${{ inputs.simulator-name || 'iPhone 15' }}
         run: |
+          DEVICE_TYPE=""
+          case "${SIMULATOR_NAME}" in
+            "iPhone 15")
+              DEVICE_TYPE="com.apple.CoreSimulator.SimDeviceType.iPhone-15"
+              ;;
+            "iPhone 16")
+              DEVICE_TYPE="com.apple.CoreSimulator.SimDeviceType.iPhone-16"
+              ;;
+            "iPhone 17")
+              DEVICE_TYPE="com.apple.CoreSimulator.SimDeviceType.iPhone-17"
+              ;;
+          esac
+
           # Create and boot simulator with the specific iOS version
-          DEVICE_ID=$(xcrun simctl create "TestDevice" "$SIMULATOR_NAME" "iOS-$IOS_VERSION-simulator" || xcrun simctl create "TestDevice" "$SIMULATOR_NAME" "iOS-${IOS_VERSION/./-}-simulator")
+          DEVICE_ID=$(xcrun simctl create "${SIMULATOR_NAME}" "${DEVICE_TYPE}" "com.apple.CoreSimulator.SimRuntime.iOS-${IOS_VERSION}")
           echo "Created simulator with ID: $DEVICE_ID"
           xcrun simctl boot "$DEVICE_ID"
           
