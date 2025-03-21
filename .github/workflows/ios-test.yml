@@ -70,11 +70,17 @@ jobs:
           # Wait for simulator to be fully booted
           xcrun simctl bootstatus "$DEVICE_ID" -b
           echo "Simulator booted successfully"
-          
-          # Configure status bar
-          # CURRENT_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S+0000")
-          # xcrun simctl status_bar "$DEVICE_ID" override --time "$CURRENT_TIME" --dataNetwork wifi --wifiMode active --cellularMode active
-          # echo "Status bar configured"
+          # Set current time and status bar
+          xcrun simctl status_bar "$DEVICE_ID" override \
+            --time "$CURRENT_TIME" \
+            --dataNetwork "wifi" \
+            --wifiMode "active" \
+            --wifiBars "3" \
+            --cellularMode "active" \
+            --cellularBars "4" \
+            --batteryLevel "100" \
+            --batteryState "charged"
+          echo "Status bar configured"
           
           # Prepare simulator for notifications
           # Enable notifications in system settings
@@ -82,7 +88,6 @@ jobs:
           
           # Configure notification settings for the simulator
           xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.Preferences AutoAcceptAlerts -bool true
-          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.springboard FBSystemAlertsPolicyEnabled -bool false
           
           # Restart SpringBoard to apply settings
           xcrun simctl spawn "$DEVICE_ID" launchctl kickstart -k user/foreground/com.apple.SpringBoard
