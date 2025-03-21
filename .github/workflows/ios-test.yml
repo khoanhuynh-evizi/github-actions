@@ -60,7 +60,7 @@ jobs:
               ;;
           esac
 
-          VERSION_TYPE=$(xcrun simctl list runtimes | grep -i "${IOS_VERSION}" | awk '{print $NF}')
+          VERSION_TYPE=$(xcrun simctl list runtimes | grep -i "iOS" | grep -i "${IOS_VERSION}" | awk '{print $NF}')
 
           # Create and boot simulator with the specific iOS version
           DEVICE_ID=$(xcrun simctl create "${SIMULATOR_NAME}" "${DEVICE_TYPE}" "${VERSION_TYPE}")
