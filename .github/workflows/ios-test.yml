@@ -81,8 +81,8 @@ jobs:
           xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.springboard FBSystemAlertsPolicyEnabled -bool false
           
           # Restart SpringBoard to apply settings
-          xcrun simctl spawn "$DEVICE_ID" launchctl stop com.apple.springboard
-          xcrun simctl spawn "$DEVICE_ID" launchctl start com.apple.springboard
+          xcrun simctl spawn "$DEVICE_ID" launchctl kickstart -k system/com.apple.SpringBoard
+          xcrun simctl spawn "$DEVICE_ID" defaults read com.apple.springboard
           sleep 15
           echo "SpringBoard restarted"
           
