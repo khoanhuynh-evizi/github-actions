@@ -74,6 +74,7 @@ jobs:
           # Prepare simulator for notifications
           # Enable notifications in system settings
           xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.notificationcenterui NotificationWillShowInLockScreen -bool true
+          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.notificationcenterui NotificationCenterEnabled -bool true
           xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.springboard SBRingerMuted -bool false
           # Configure notification settings for the simulator
           xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.Preferences AutoAcceptAlerts -bool true
@@ -144,6 +145,10 @@ jobs:
           chmod +x ./ci_scripts/run-tests.sh
           ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }} --deviceId="${SIMULATOR_ID}"
         shell: bash
+        
+      - name: Test notification
+        run: |
+          xcrun simctl spawn "${SIMULATOR_ID}" defaults read com.apple.springboard          
 
       - uses: actions/upload-artifact@v4
         if: always()
