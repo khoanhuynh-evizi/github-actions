@@ -41,7 +41,51 @@ jobs:
     name: Test UI on Simulator
     runs-on: ${{ github.event.inputs.runner_type }}
     # needs: clean-up-mobile-data-ui-testing
-    steps:
+    steps:    
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{secrets.WDIO_ACCESS_TOKEN}}
+          repository: ${{secrets.WDIO_IOS_REPOS}}
+          ref: auto_latest # ${{ secrets.WDIO_IOS_BRANCH }}
+
+      - name: Set up SSH Agent and Key
+        uses: tanmancan/action-setup-ssh-agent-key@1.0.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+          ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
+
+      - name: Download Test data from firebase
+        if: "${{ inputs.useUrlTestData == true }}"
+        run: |
+          echo "${{ secrets.FIREBASE_SDK_KEY }}" > record360UITests/Firebase/firebase-sdk-key.json
+          cd record360UITests/Firebase
+          npm install
+          node firebase.js
+          cd ../../
+          
+      - name: Install CocoaPods dependencies
+        run: |
+          pod install --repo-update
+          pod update Record360SDK
+        shell: bash
+        
+      - name: Copy Configuration plist
+        run: sh ci_scripts/ci_configuration.sh
+        shell: bash
+
+      - name: Install xcpretty from https://github.com/xcpretty
+        run: |
+          # Create temporary Gemfile just for xcpretty
+          echo "source 'https://rubygems.org'" > Gemfile
+          echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git', branch: 'master'" >> Gemfile
+          
+          # Install using bundler
+          bundle install
+          
+          # Verify version
+          bundle exec xcpretty --version
+          
       - name: Boot and launch simulator
         env:
           IOS_VERSION: ${{ inputs.ios-version || '17.5' }}
@@ -87,50 +131,6 @@ jobs:
           
           # Store simulator ID in github env
           echo "SIMULATOR_ID=$DEVICE_ID" >> $GITHUB_ENV
-          
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{secrets.WDIO_ACCESS_TOKEN}}
-          repository: ${{secrets.WDIO_IOS_REPOS}}
-          ref: auto_latest # ${{ secrets.WDIO_IOS_BRANCH }}
-
-      - name: Set up SSH Agent and Key
-        uses: tanmancan/action-setup-ssh-agent-key@1.0.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
-          ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
-
-      - name: Download Test data from firebase
-        if: "${{ inputs.useUrlTestData == true }}"
-        run: |
-          echo "${{ secrets.FIREBASE_SDK_KEY }}" > record360UITests/Firebase/firebase-sdk-key.json
-          cd record360UITests/Firebase
-          npm install
-          node firebase.js
-          cd ../../
-          
-      - name: Install CocoaPods dependencies
-        run: |
-          pod install --repo-update
-          pod update Record360SDK
-        shell: bash
-        
-      - name: Copy Configuration plist
-        run: sh ci_scripts/ci_configuration.sh
-        shell: bash
-
-      - name: Install xcpretty from https://github.com/xcpretty
-        run: |
-          # Create temporary Gemfile just for xcpretty
-          echo "source 'https://rubygems.org'" > Gemfile
-          echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git', branch: 'master'" >> Gemfile
-          
-          # Install using bundler
-          bundle install
-          
-          # Verify version
-          bundle exec xcpretty --version
 
       - name: Execute Staging-UI
         if: "${{ inputs.list_tests == '' }}"
@@ -147,6 +147,7 @@ jobs:
         shell: bash
         
       - name: Test notification
+        if: always()
         run: |
           xcrun simctl spawn "${SIMULATOR_ID}" defaults read com.apple.springboard          
 
