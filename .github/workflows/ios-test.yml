@@ -42,7 +42,7 @@ jobs:
     runs-on: ${{ github.event.inputs.runner_type }}
     # needs: clean-up-mobile-data-ui-testing
     steps:
-    - name: Boot and launch simulator
+      - name: Boot and launch simulator
         env:
           IOS_VERSION: ${{ inputs.ios-version || '17.5' }}
           SIMULATOR_NAME: ${{ inputs.simulator-name || 'iPhone 15' }}
