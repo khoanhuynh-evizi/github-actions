@@ -19,14 +19,19 @@ on:
         description: Input subset of tests for testing
         required: false
       ios-version:
-        description: 'iOS Version (e.g., 17.5)'
+        description: 'iOS Version (e.g., 18.2)'
         required: false
-        default: '17.5'
+        default: '18.2'
         type: string
       simulator-name:
         description: 'Simulator Name'
         required: false
-        default: 'iPhone 15'
+        default: 'iPhone 16'
+        type: string
+      xcode-version:
+        description: 'Xcode version'
+        required: false
+        default: '16.2'
         type: string
 env:
     PATH_TEST_SUITE: record360UITests/Resources/testRun.json
@@ -63,6 +68,10 @@ jobs:
           npm install
           node firebase.js
           cd ../../
+          
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ inputs.xcode-version || '16.2' }}
           
       - name: Install CocoaPods dependencies
         run: |
