@@ -16,6 +16,10 @@ on:
         required: false
         default: '35'
         type: string
+      submodule-branch:
+        description: '(e.g., master)'
+        required: false
+        type: string
 env:
     PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
 
@@ -43,6 +47,8 @@ jobs:
           repository: ${{secrets.WDIO_ANDROID_REPOS}}
           ref: auto_latest # ${{ vars.WDIO_ANDROID_BRANCH }}
           submodules: true
+          submodules-branch: ${{ inputs.submodule-branch }}
+
           
       - name: Download Test data from firebase
         if: "${{ inputs.useUrlTestData == true }}"
