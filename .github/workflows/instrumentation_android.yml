@@ -142,11 +142,11 @@ jobs:
       #     swap-storage: true
 
 
-      - name: Build App
-        run: ./gradlew assembleStagingDebug
+      # - name: Build App
+      #   run: ./gradlew assembleStagingDebug
         
-      - name: Build Test App
-        run: ./gradlew assembleStagingDebugAndroidTest
+      # - name: Build Test App
+      #   run: ./gradlew assembleStagingDebugAndroidTest
           
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
