@@ -4,6 +4,10 @@ run-name: ${{ github.actor }} is running Instrument Tests
 on:
   workflow_dispatch:
     inputs:
+      os-version:
+        description: 'Ubuntu version to use (e.g., ubuntu-22.04 or ubuntu-latest)'
+        required: false
+        default: 'ubuntu-latest'
       useUrlTestData:
         description: Enable download testdata from url
         type: boolean
@@ -30,11 +34,11 @@ permissions:
   
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ inputs.os-version || 'ubuntu-latest' }}
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ${{ inputs.os-version || 'ubuntu-latest' }}
             version: ${{ inputs.sdk-version || '35' }}
             arch: x86_64
             target: google_apis
