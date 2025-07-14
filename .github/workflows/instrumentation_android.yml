@@ -91,6 +91,12 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+
+      - name: Build App
+        run: ./gradlew assembleStagingDebug
+        
+      - name: Build Test App
+        run: ./gradlew assembleStagingDebugAndroidTest
         
       - name: Enable KVM for linux runners
         if: runner.os == 'Linux'
@@ -141,13 +147,6 @@ jobs:
       #     large-packages: true
       #     docker-images: true
       #     swap-storage: true
-
-
-      # - name: Build App
-      #   run: ./gradlew assembleStagingDebug
-        
-      # - name: Build Test App
-      #   run: ./gradlew assembleStagingDebugAndroidTest
           
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
