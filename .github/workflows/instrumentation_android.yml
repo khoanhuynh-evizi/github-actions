@@ -49,7 +49,7 @@ jobs:
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_ANDROID_REPOS}}
-          ref: auto_latest # ${{ vars.WDIO_ANDROID_BRANCH }}
+          ref: master # ${{ vars.WDIO_ANDROID_BRANCH }}
           submodules: true
           
       - name: Checkout submodules at master branch
