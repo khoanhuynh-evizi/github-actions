@@ -83,7 +83,7 @@ jobs:
       - name: Set Up JDK Environment
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: 'jetbrains'
           java-version: '17'
           
       - name: Setup Gradle
