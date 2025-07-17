@@ -49,7 +49,7 @@ jobs:
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_ANDROID_REPOS}}
-          ref: master # ${{ vars.WDIO_ANDROID_BRANCH }}
+          ref: auto_latest # ${{ vars.WDIO_ANDROID_BRANCH }}
           submodules: true
           
       - name: Checkout submodules at master branch
@@ -92,11 +92,11 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build App
-        run: ./gradlew assembleStagingDebug
+      # - name: Build App
+      #   run: ./gradlew assembleStagingDebug
         
-      - name: Build Test App
-        run: ./gradlew assembleStagingDebugAndroidTest
+      # - name: Build Test App
+      #   run: ./gradlew assembleStagingDebugAndroidTest
         
       - name: Enable KVM for linux runners
         if: runner.os == 'Linux'
