@@ -39,10 +39,10 @@ jobs:
       matrix:
         include:
           - os: ${{ inputs.os-version || 'ubuntu-latest' }}
-            version: ${{ inputs.sdk-version || '35' }}
+            version: ${{ inputs.sdk-version || '36' }}
             arch: x86_64
             target: google_apis
-            profile: Nexus 6
+            profile: pixel_7
     steps:
       - name: Checkout
         uses: actions/checkout@v4
