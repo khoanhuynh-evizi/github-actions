@@ -20,6 +20,11 @@ on:
         required: false
         default: '35'
         type: string
+      main-branch:
+        description: 'main branch(e.g., master)'
+        required: false
+        type: string
+        default: 'master'
       submodule-branch:
         description: 'submodule branch(e.g., master)'
         required: false
@@ -49,7 +54,7 @@ jobs:
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_ANDROID_REPOS}}
-          ref: master # ${{ vars.WDIO_ANDROID_BRANCH }}
+          ref: ${{ github.event.inputs.main-branch || 'master' }} # ${{ vars.WDIO_ANDROID_BRANCH }}
           submodules: true
           
       - name: Checkout submodules at master branch
