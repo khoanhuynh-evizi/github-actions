@@ -4,13 +4,10 @@ on:
   workflow_dispatch:    
     inputs:
       runner_type:
-        description: 'Select the type of runner'
+        description: 'Input name of runner'
         required: true
         default: 'macos-latest'
-        type: choice
-        options:
-          - macos-latest
-          - macos-13
+        type: string
       useUrlTestData:
         description: Enable download testdata from url
         type: boolean
