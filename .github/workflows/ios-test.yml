@@ -140,7 +140,12 @@ jobs:
           
       #     # Store simulator ID in github env
       #     echo "SIMULATOR_ID=$DEVICE_ID" >> $GITHUB_ENV
-
+      
+      - name: Set simulator environment
+        run: |
+          echo "SIMULATOR_NAME=${{ inputs.simulator-name || 'iPhone 17' }}" >> $GITHUB_ENV
+        shell: bash
+        
       - name: Execute Staging-UI
         if: "${{ inputs.list_tests == '' }}"
         run: |
@@ -153,12 +158,7 @@ jobs:
         run: |
           chmod +x ./ci_scripts/run-tests.sh
           ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }} --deviceName="${SIMULATOR_NAME}"
-        shell: bash
-        
-      # - name: Test notification
-      #   if: always()
-      #   run: |
-      #     xcrun simctl spawn "${SIMULATOR_ID}" defaults read com.apple.springboard          
+        shell: bash          
 
       - uses: actions/upload-artifact@v4
         if: always()
