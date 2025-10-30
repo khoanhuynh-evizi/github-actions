@@ -74,8 +74,24 @@ jobs:
         with:
           xcode-version: ${{ inputs.xcode-version || '16.2' }}
           
-      - name: Download iOS simulators (universal)
+      - name: Ensure iOS platforms are universal (macOS 26+ only)
         run: |
+          DARWIN_MAJOR=$(uname -r | cut -d. -f1)
+          echo "Darwin major version: ${DARWIN_MAJOR}"
+          if [ "$DARWIN_MAJOR" -lt 26 ]; then
+            echo "macOS Darwin <$DARWIN_MAJOR>; skipping universal iOS platform download."
+            exit 0
+          fi
+
+          XCODE_PATH=$(xcode-select -p)
+          IOS_PLATFORM_DIR="$XCODE_PATH/Platforms/iOS.platform"
+          IOS_SIM_PLATFORM_DIR="$XCODE_PATH/Platforms/iOS Simulator.platform"
+
+          echo "Removing existing iOS platform directories to avoid arm64Only conflicts (if present)..."
+          sudo rm -rf "$IOS_PLATFORM_DIR" || true
+          sudo rm -rf "$IOS_SIM_PLATFORM_DIR" || true
+
+          echo "Downloading iOS platform (universal)..."
           sudo xcodebuild -downloadPlatform iOS -architectureVariant universal
         shell: bash
         
