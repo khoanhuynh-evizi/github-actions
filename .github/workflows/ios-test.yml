@@ -74,6 +74,11 @@ jobs:
         with:
           xcode-version: ${{ inputs.xcode-version || '16.2' }}
           
+      - name: Download iOS simulators (universal)
+        run: |
+          sudo xcodebuild -downloadPlatform iOS -architectureVariant universal
+        shell: bash
+        
       - name: Install CocoaPods dependencies
         run: |
           pod install --repo-update
