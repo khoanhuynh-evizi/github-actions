@@ -95,56 +95,55 @@ jobs:
           
           # Verify version
           bundle exec xcpretty --version
-          
-      # - name: Boot and launch simulator
-      #   env:
-      #     IOS_VERSION: ${{ inputs.ios-version || '17.5' }}
-      #     SIMULATOR_NAME: ${{ inputs.simulator-name || 'iPhone 15' }}
-      #   run: |
-      #     # Update device type identifier for the given simulator name
-      #     DEVICE_TYPE=$(xcrun simctl list devicetypes | awk -v name="${SIMULATOR_NAME}" -F'[()]' '$1 ~ name {gsub(/^ *| *$/,"",$1); if ($1==name) {print $2; exit}}')
-      #     if [ -z "$DEVICE_TYPE" ]; then
-      #       # Fallback to case-insensitive partial match
-      #       DEVICE_TYPE=$(xcrun simctl list devicetypes | awk -v name="${SIMULATOR_NAME}" -F'[()]' 'tolower($1) ~ tolower(name) {print $2; exit}')
-      #     fi
-      #     if [ -z "$DEVICE_TYPE" ]; then
-      #       echo "Failed to find device type for simulator name '${SIMULATOR_NAME}'"
-      #       xcrun simctl list devicetypes
-      #       exit 1
-      #     fi
-
-      #     VERSION_TYPE=$(xcrun simctl list runtimes | grep -i "iOS" | grep -i "${IOS_VERSION}" | awk '{print $NF}')
-
-      #     # Create and boot simulator with the specific iOS version
-      #     DEVICE_ID=$(xcrun simctl create "${SIMULATOR_NAME}" "${DEVICE_TYPE}" "${VERSION_TYPE}")
-      #     echo "Created simulator with ID: $DEVICE_ID"
-      #     xcrun simctl boot "$DEVICE_ID"
-          
-      #     # Wait for simulator to be fully booted
-      #     xcrun simctl bootstatus "$DEVICE_ID" -b
-      #     echo "Simulator booted successfully"
-          
-      #     # Prepare simulator for notifications
-      #     # Enable notifications in system settings
-      #     xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.notificationcenterui NotificationWillShowInLockScreen -bool true
-      #     xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.notificationcenterui NotificationCenterEnabled -bool true
-      #     xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.springboard SBRingerMuted -bool false
-      #     # Configure notification settings for the simulator
-      #     xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.Preferences AutoAcceptAlerts -bool true
-          
-      #     # Restart SpringBoard to apply settings
-      #     xcrun simctl spawn "$DEVICE_ID" launchctl kickstart -k user/foreground/com.apple.SpringBoard
-      #     xcrun simctl spawn "$DEVICE_ID" defaults read com.apple.springboard
-      #     sleep 15
-      #     echo "SpringBoard restarted"
-          
-      #     # Store simulator ID in github env
-      #     echo "SIMULATOR_ID=$DEVICE_ID" >> $GITHUB_ENV
       
       - name: Set simulator environment
         run: |
           echo "SIMULATOR_NAME=${{ inputs.simulator-name || 'iPhone 17' }}" >> $GITHUB_ENV
         shell: bash
+        
+      - name: Boot and launch simulator
+        env:
+          IOS_VERSION: ${{ inputs.ios-version || '17.5' }}
+        run: |
+          # Update device type identifier for the given simulator name
+          DEVICE_TYPE=$(xcrun simctl list devicetypes | awk -v name="${SIMULATOR_NAME}" -F'[()]' '$1 ~ name {gsub(/^ *| *$/,"",$1); if ($1==name) {print $2; exit}}')
+          if [ -z "$DEVICE_TYPE" ]; then
+            # Fallback to case-insensitive partial match
+            DEVICE_TYPE=$(xcrun simctl list devicetypes | awk -v name="${SIMULATOR_NAME}" -F'[()]' 'tolower($1) ~ tolower(name) {print $2; exit}')
+          fi
+          if [ -z "$DEVICE_TYPE" ]; then
+            echo "Failed to find device type for simulator name '${SIMULATOR_NAME}'"
+            xcrun simctl list devicetypes
+            exit 1
+          fi
+
+          VERSION_TYPE=$(xcrun simctl list runtimes | grep -i "iOS" | grep -i "${IOS_VERSION}" | awk '{print $NF}')
+
+          # Create and boot simulator with the specific iOS version
+          DEVICE_ID=$(xcrun simctl create "${SIMULATOR_NAME}" "${DEVICE_TYPE}" "${VERSION_TYPE}")
+          echo "Created simulator with ID: $DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID"
+          
+          # Wait for simulator to be fully booted
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          echo "Simulator booted successfully"
+          
+          # Prepare simulator for notifications
+          # Enable notifications in system settings
+          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.notificationcenterui NotificationWillShowInLockScreen -bool true
+          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.notificationcenterui NotificationCenterEnabled -bool true
+          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.springboard SBRingerMuted -bool false
+          # Configure notification settings for the simulator
+          xcrun simctl spawn "$DEVICE_ID" defaults write com.apple.Preferences AutoAcceptAlerts -bool true
+          
+          # Restart SpringBoard to apply settings
+          xcrun simctl spawn "$DEVICE_ID" launchctl kickstart -k user/foreground/com.apple.SpringBoard
+          xcrun simctl spawn "$DEVICE_ID" defaults read com.apple.springboard
+          sleep 15
+          echo "SpringBoard restarted"
+          
+          # Store simulator ID in github env
+          echo "SIMULATOR_ID=$DEVICE_ID" >> $GITHUB_ENV
         
       - name: Execute Staging-UI
         if: "${{ inputs.list_tests == '' }}"
