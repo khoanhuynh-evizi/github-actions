@@ -78,36 +78,42 @@ jobs:
         run: |
           echo "SIMULATOR_NAME=${{ inputs.simulator-name || 'iPhone 17' }}" >> $GITHUB_ENV
         shell: bash
+
+      - uses: futureware-tech/simulator-action@v4
+        with:
+          model: 'iPhone 16'
+          os: 'iOS'
+          os_version: ${{ inputs.ios-version || '18.2' }}
         
-      - name: Boot and launch simulator
-        env:
-          IOS_VERSION: ${{ inputs.ios-version || '18.2' }}
-          SIMULATOR_NAME: ${{ inputs.simulator-name || 'iPhone 16' }}
-        run: |
-          DEVICE_TYPE=""
-          # Dynamically resolve device type identifier for the given simulator name
-          DEVICE_TYPE=$(xcrun simctl list devicetypes | awk -v name="${SIMULATOR_NAME}" -F'[()]' '$1 ~ name {gsub(/^ *| *$/,"",$1); if ($1==name) {print $2; exit}}')
-          if [ -z "$DEVICE_TYPE" ]; then
-            # Fallback to case-insensitive partial match
-            DEVICE_TYPE=$(xcrun simctl list devicetypes | awk -v name="${SIMULATOR_NAME}" -F'[()]' 'tolower($1) ~ tolower(name) {print $2; exit}')
-          fi
-          if [ -z "$DEVICE_TYPE" ]; then
-            echo "Failed to find device type for simulator name '${SIMULATOR_NAME}'"
-            xcrun simctl list devicetypes
-            exit 1
-          fi
-          VERSION_TYPE=$(xcrun simctl list runtimes | grep -i "iOS" | grep -i "${IOS_VERSION}" | awk '{print $NF}')
-          # Create and boot simulator with the specific iOS version
-          DEVICE_ID=$(xcrun simctl create "${SIMULATOR_NAME}" "${DEVICE_TYPE}" "${VERSION_TYPE}")
-          echo "Created simulator with ID: $DEVICE_ID"
-          xcrun simctl boot "$DEVICE_ID"
+      # - name: Boot and launch simulator
+      #   env:
+      #     IOS_VERSION: ${{ inputs.ios-version || '18.2' }}
+      #     SIMULATOR_NAME: ${{ inputs.simulator-name || 'iPhone 16' }}
+      #   run: |
+      #     DEVICE_TYPE=""
+      #     # Dynamically resolve device type identifier for the given simulator name
+      #     DEVICE_TYPE=$(xcrun simctl list devicetypes | awk -v name="${SIMULATOR_NAME}" -F'[()]' '$1 ~ name {gsub(/^ *| *$/,"",$1); if ($1==name) {print $2; exit}}')
+      #     if [ -z "$DEVICE_TYPE" ]; then
+      #       # Fallback to case-insensitive partial match
+      #       DEVICE_TYPE=$(xcrun simctl list devicetypes | awk -v name="${SIMULATOR_NAME}" -F'[()]' 'tolower($1) ~ tolower(name) {print $2; exit}')
+      #     fi
+      #     if [ -z "$DEVICE_TYPE" ]; then
+      #       echo "Failed to find device type for simulator name '${SIMULATOR_NAME}'"
+      #       xcrun simctl list devicetypes
+      #       exit 1
+      #     fi
+      #     VERSION_TYPE=$(xcrun simctl list runtimes | grep -i "iOS" | grep -i "${IOS_VERSION}" | awk '{print $NF}')
+      #     # Create and boot simulator with the specific iOS version
+      #     DEVICE_ID=$(xcrun simctl create "${SIMULATOR_NAME}" "${DEVICE_TYPE}" "${VERSION_TYPE}")
+      #     echo "Created simulator with ID: $DEVICE_ID"
+      #     xcrun simctl boot "$DEVICE_ID"
           
-          # Wait for simulator to be fully booted
-          xcrun simctl bootstatus "$DEVICE_ID" -b
-          echo "Simulator booted successfully"
+      #     # Wait for simulator to be fully booted
+      #     xcrun simctl bootstatus "$DEVICE_ID" -b
+      #     echo "Simulator booted successfully"
           
-          # Store simulator ID in github env
-          echo "SIMULATOR_ID=$DEVICE_ID" >> $GITHUB_ENV
+      #     # Store simulator ID in github env
+      #     echo "SIMULATOR_ID=$DEVICE_ID" >> $GITHUB_ENV
         
       - name: Install CocoaPods dependencies
         run: |
