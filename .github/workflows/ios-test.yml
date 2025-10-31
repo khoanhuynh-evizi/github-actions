@@ -81,7 +81,7 @@ jobs:
 
       - uses: futureware-tech/simulator-action@v4
         with:
-          model: "${SIMULATOR_NAME}"
+          model: "${{SIMULATOR_NAME || 'iPhone 15' }}"
           os: 'iOS'
           os_version: ${{ inputs.ios-version || '18.2' }}
         
