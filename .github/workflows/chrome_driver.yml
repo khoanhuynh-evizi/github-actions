@@ -10,6 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check Chrome version before
+        run: |
+          google-chrome --version
+      - name: Check ChromeDriver version before
+        run: |
+          chromedriver --version
+
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
         with:
@@ -21,3 +28,10 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Check Chrome version after
+        run: |
+          google-chrome --version
+      - name: Check ChromeDriver version after
+        run: |
+          chromedriver --version
