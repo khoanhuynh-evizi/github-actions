@@ -1,47 +1,57 @@
 name: Chrome Version Test
-# Controls when the workflow will run
+
 on:
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    
     steps:
       - uses: actions/checkout@v4
-
+      
       - name: Check Chrome version before
         run: |
-          google-chrome --version
+          google-chrome --version || echo "Chrome not found"
           
       - name: Check ChromeDriver version before
         run: |
-          chromedriver --version
-
-      - name: Setup Chrome
-        uses: browser-actions/setup-chrome@v1
+          chromedriver --version || echo "ChromeDriver not found"
+      
+      - name: Setup Chrome and ChromeDriver
+        uses: browser-actions/setup-chrome@v2
+        id: setup-chrome
         with:
           chrome-version: '131'
-
-      - uses: nanasess/setup-chromedriver@v2
-        with:
-          chromedriver-version: '131.0.6778.87'
-
-      - name: Check Chrome version after
+          install-chromedriver: true
+      
+      - name: Check Chrome version after (using output path)
         run: |
-          google-chrome --version
+          ${{ steps.setup-chrome.outputs.chrome-path }} --version
           
-      - name: Check ChromeDriver version after
+      - name: Check ChromeDriver version after (using output path)
         run: |
+          ${{ steps.setup-chrome.outputs.chromedriver-path }} --version
+          
+      - name: Add Chrome and ChromeDriver to PATH
+        run: |
+          echo "$(dirname ${{ steps.setup-chrome.outputs.chrome-path }})" >> $GITHUB_PATH
+          echo "$(dirname ${{ steps.setup-chrome.outputs.chromedriver-path }})" >> $GITHUB_PATH
+      
+      - name: Verify Chrome and ChromeDriver in PATH
+        run: |
+          which chrome
+          chrome --version
+          which chromedriver
           chromedriver --version
           
       - name: Use Node.js 18
         uses: actions/setup-node@v4
         with:
           node-version: 18
-
+      
       - name: Install dependencies
         run: npm ci
-
+      
       - name: Run tests
         run: npm test
