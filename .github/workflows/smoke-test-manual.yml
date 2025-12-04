@@ -15,6 +15,10 @@ on:
         description: 'Specific testcase (Optional)'
         required: false
         default: ''
+      branch:
+        description: 'Test branch'
+        required: true
+        default: 'master'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -30,13 +34,14 @@ jobs:
       with:
         repository: ${{ secrets.WDIO_REPOS }}
         token: ${{ secrets.WDIO_ACCESS_TOKEN }}
-        ref: fe-2698
+        ref: ${{ github.event.inputs.branch }}
 
     - name: Use Node.js 20.x
       uses: actions/setup-node@v4
       with:
         node-version: 20.x
         cache: 'yarn'
+        cache-dependency-path: yarn.lock
 
     - name: Install dependencies
       run: yarn install --frozen-lockfile
@@ -65,7 +70,7 @@ jobs:
         if [ ! -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
           exit 1
         fi
-
+    
     - name: Generate Allure Report
       if: always()
       uses: simple-elf/allure-report-action@v1.13
@@ -73,7 +78,6 @@ jobs:
         allure_results: reports
         allure_report: allure-report
         allure_history: allure-history
-
     - name: Upload HTML Report
       if: success() || failure()
       uses: actions/upload-artifact@v4
@@ -88,4 +92,37 @@ jobs:
       with:
         name: reports-allure
         path: reports/
-        retention-days: 7
+        retention-days: 7     
+
+    - name: Prepare dated report & create deploy folder
+      if: always()
+      run: |
+        mkdir -p deploy
+        cp -r allure-report/* deploy/
+  
+    - name: Create firebase.json & .firebaserc
+      if: always()
+      run: |
+        echo '{
+          "hosting": {
+            "public": "deploy",
+            "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
+          }
+        }' > firebase.json
+        echo '{
+          "projects": {
+            "default": "record360-report-s"
+          }
+        }' > .firebaserc
+
+    - name: Set up Firebase credentials
+      if: always()
+      run: echo '${{ secrets.L_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
+
+    - name: Deploy Allure Report to Firebase Hosting
+      if: always()
+      uses: w9jds/firebase-action@v13.27.0
+      with:
+        args: deploy --only hosting --project record360-report-s
+      env:
+        GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
