@@ -1,8 +1,6 @@
 name: Smoke Test (-s)
 
 on:
-  schedule:
-    - cron: '30 23 * * 1-5'
   workflow_dispatch:
 
 concurrency:
