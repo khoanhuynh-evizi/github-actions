@@ -2,6 +2,19 @@ name: Smoke Test Manual (-s)
 
 on:
   workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Suite name'
+        required: true
+        default: 'Smoke Test'
+      features:
+        description: 'Feature (Optional)'
+        required: false
+        default: ''
+      featureTestCases:
+        description: 'Specific testcase (Optional)'
+        required: false
+        default: ''
 
 concurrency:
   group: ${{ github.workflow }}
@@ -28,11 +41,15 @@ jobs:
     - name: Install dependencies
       run: yarn install --frozen-lockfile
 
-    - name: Run WebDriverIO Smoke Tests
+    - name: Run WebDriverIO Tests
       uses: StarUbiquitous/command-output@v1.0.1
       id: wdio
       with:
-        run: yarn test:local --suite="Smoke Test"
+        run: |
+          yarn test:local \
+            --suite="${{ github.event.inputs.suite }}" \
+            --features="${{ github.event.inputs.features }}" \
+            --featureTestCases="${{ github.event.inputs.featureTestCases }}"
       env:
         CAPABILITIES: chrome
         MAX_INSTANCES: 2
