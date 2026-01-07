@@ -130,6 +130,6 @@ jobs:
     - name: Notify on success
       if: success()
       run: |
-        curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
+        curl -X POST "${{ secrets.GCHAT_WEBHOOK }}" \
         -H "Content-Type: application/json" \
         -d '{"text": "✅ Dashboard: https://record360-report-s.web.app"}'
