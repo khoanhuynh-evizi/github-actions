@@ -142,50 +142,70 @@ jobs:
       env:
         GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
 
-    - name: Notify Google Chat (Rich Card)
+    - name: Notify Google Chat (Rich Card – Level 2)
       env:
         TZ: Asia/Ho_Chi_Minh
       if: always()
       run: |
-        if [ "${{ job.status }}" = "success" ]; then
-          STATUS="PASSED"
-          STATUS_COLOR="#0F9D58"
+        if [ "$TOTAL" -gt 0 ]; then
+          PASS_RATE=$(( PASSED * 100 / TOTAL ))
         else
+          PASS_RATE=0
+        fi
+
+        if [ "${{ job.status }}" != "success" ]; then
           STATUS="FAILED"
           STATUS_COLOR="#DB4437"
+          STATUS_ICON="❌"
+        else
+          STATUS="PASSED"
+          STATUS_COLOR="#0F9D58"
+          STATUS_ICON="✅"
         fi
 
         DATE_TIME=$(date '+%d-%m-%Y %H:%M:%S')
         COMMIT_SHA="${GITHUB_SHA::8}"
         REPORT_URL="https://record360-report-s.web.app"
+        SUITE="${{ github.event.inputs.suite }}"
+        BRANCH="${{ github.event.inputs.branch }}"
 
         curl -X POST "${{ secrets.GCHAT_WEBHOOK }}" \
           -H "Content-Type: application/json" \
           -d "{
             \"cardsV2\": [
               {
-                \"cardId\": \"automation-report\",
+                \"cardId\": \"wdio-report\",
                 \"card\": {
                   \"header\": {
                     \"title\": \"🔥 WDIO Automation Report\",
-                    \"subtitle\": \"Date: $DATE_TIME\"
+                    \"subtitle\": \"$SUITE · $DATE_TIME\"
                   },
                   \"sections\": [
                     {
                       \"widgets\": [
                         {
-                          \"decoratedText\": {
-                            \"text\": \"<b>Status:</b> <font color=\\\"$STATUS_COLOR\\\">$STATUS</font>\"
+                          \"textParagraph\": {
+                            \"text\": \"$STATUS_ICON <b>Status:</b> <font color=\\\"$STATUS_COLOR\\\"><b>$STATUS</b></font> · <b>$PASS_RATE%</b> passed\"
                           }
-                        },
+                        }
+                      ]
+                    },
+                    {
+                      \"header\": \"📊 Test Summary\",
+                      \"widgets\": [
                         {
                           \"textParagraph\": {
-                            \"text\": \"<b>Passed:</b> $PASSED<br><b>Retries:</b> $RETRIES<br><b>Skipped:</b> $SKIPPED<br><b>Total:</b> $TOTAL\"
+                            \"text\": \"✅ <b>Passed:</b> $PASSED<br>🔁 <b>Retries:</b> $RETRIES<br>⏭️ <b>Skipped:</b> $SKIPPED<br>📦 <b>Total:</b> $TOTAL\"
                           }
-                        },
+                        }
+                      ]
+                    },
+                    {
+                      \"header\": \"🧾 Context\",
+                      \"widgets\": [
                         {
                           \"textParagraph\": {
-                            \"text\": \"<b>Duration:</b> $DURATION<br><b>Commit:</b> $COMMIT_SHA\"
+                            \"text\": \"⏱️ <b>Duration:</b> $DURATION<br>🌿 <b>Branch:</b> <code>$BRANCH</code><br>🔖 <b>Commit:</b> <code>$COMMIT_SHA</code>\"
                           }
                         }
                       ]
@@ -196,7 +216,7 @@ jobs:
                           \"buttonList\": {
                             \"buttons\": [
                               {
-                                \"text\": \"📄 View Report\",
+                                \"text\": \"📄 VIEW ALLURE REPORT\",
                                 \"onClick\": {
                                   \"openLink\": {
                                     \"url\": \"$REPORT_URL\"
@@ -213,3 +233,4 @@ jobs:
               }
             ]
           }"
+
