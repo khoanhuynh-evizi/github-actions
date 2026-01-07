@@ -70,96 +70,6 @@ jobs:
         if [ ! -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
           exit 1
         fi
-    - name: Build Google Chat Card
-      if: always()
-      id: chat
-      shell: bash
-      run: |
-        LOG="${{ steps.wdio.outputs.stdout }}"
-
-        PASSED=$(echo "$LOG" | grep -oE '[0-9]+\s+passing' | grep -oE '[0-9]+' | head -1 || echo 0)
-        FAILED=$(echo "$LOG" | grep -oE '[0-9]+\s+failing' | grep -oE '[0-9]+' | head -1 || echo 0)
-        SKIPPED=$(echo "$LOG" | grep -oE '[0-9]+\s+skipped' | grep -oE '[0-9]+' | head -1 || echo 0)
-
-        if [ "${{ job.status }}" = "success" ]; then
-          STATUS="PASSED"
-          COLOR="#0F9D58"
-        else
-          STATUS="FAILED"
-          COLOR="#D93025"
-        fi
-
-        echo "payload<<EOF" >> "$GITHUB_OUTPUT"
-        cat <<EOF >> "$GITHUB_OUTPUT"
-        {
-          "cardsV2": [
-            {
-              "cardId": "wdio-smoke-report",
-              "card": {
-                "header": {
-                  "title": "🔥 WebdriverIO Smoke Test Report",
-                  "subtitle": "$(date '+%Y-%m-%d %H:%M:%S')"
-                },
-                "sections": [
-                  {
-                    "widgets": [
-                      {
-                        "textParagraph": {
-                          "text": "<tt>Status&nbsp;&nbsp;&nbsp;:</tt> <font color=\"$COLOR\"><b>$STATUS</b></font><br/>\
-          <tt>Suite&nbsp;&nbsp;&nbsp;&nbsp;:</tt> ${{ github.event.inputs.suite }}<br/>\
-          <tt>Branch&nbsp;&nbsp;:</tt> ${{ github.event.inputs.branch }}<br/>\
-          <tt>Commit&nbsp;&nbsp;:</tt> <tt>${GITHUB_SHA::8}</tt>"
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "widgets": [
-                      {
-                        "textParagraph": {
-                          "text": "<b>Results</b><br/>\
-          ────────────<br/>\
-          <tt>Passed&nbsp;&nbsp;&nbsp;:</tt> $PASSED<br/>\
-          <tt>Failed&nbsp;&nbsp;&nbsp;:</tt> $FAILED<br/>\
-          <tt>Skipped&nbsp;&nbsp;:</tt> $SKIPPED"
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "widgets": [
-                      {
-                        "buttons": [
-                          {
-                            "text": "📄 View CI Run / Allure",
-                            "onClick": {
-                              "openLink": {
-                                "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                              }
-                            }
-                          }
-                        ]
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          ]
-        }
-        EOF
-
-    # --------------------------------------------------
-    # 📤 Send Google Chat
-    # --------------------------------------------------
-    - name: Send Google Chat Notification
-      if: always()
-      env:
-        GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
-      run: |
-        curl -s -X POST "$GCHAT_WEBHOOK" \
-          -H "Content-Type: application/json" \
-          -d '${{ steps.chat.outputs.payload }}'
     
     - name: Generate Allure Report
       if: always()
@@ -216,3 +126,10 @@ jobs:
         args: deploy --only hosting --project record360-report-s
       env:
         GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
+
+    - name: Notify on success
+      if: success()
+      run: |
+        curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
+        -H "Content-Type: application/json" \
+        -d '{"text": "✅ Dashboard: https://record360-report-s.web.app"}'
