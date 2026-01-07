@@ -78,7 +78,7 @@ jobs:
         RETRIES=$(grep -oE '[0-9]+ retries' specs-reporter.log | awk '{print $1}')
         SKIPPED=$(grep -oE '[0-9]+ skipped' specs-reporter.log | awk '{print $1}')
         TOTAL=$(grep -oE '[0-9]+ total' specs-reporter.log | awk '{print $1}')
-        DURATION=$(grep -oE 'in [0-9:]+$' specs-reporter.log | awk '{print $2}')
+        DURATION=$(grep -oE 'in [0-9]{2}:[0-9]{2}:[0-9]{2}' specs-reporter.log | awk '{print $2}')
 
         echo "PASSED=${PASSED:-0}" >> $GITHUB_ENV
         echo "RETRIES=${RETRIES:-0}" >> $GITHUB_ENV
@@ -164,7 +164,6 @@ jobs:
         fi
 
         DATE_TIME=$(date '+%d-%m-%Y %H:%M:%S')
-        COMMIT_SHA="${GITHUB_SHA::8}"
         REPORT_URL="https://record360-report-s.web.app"
         SUITE="${{ github.event.inputs.suite }}"
         BRANCH="${{ github.event.inputs.branch }}"
@@ -185,7 +184,7 @@ jobs:
                       \"widgets\": [
                         {
                           \"textParagraph\": {
-                            \"text\": \"$STATUS_ICON <b>Status:</b> <font color=\\\"$STATUS_COLOR\\\"><b>$STATUS</b></font> · <b>$PASS_RATE%</b> passed\"
+                            \"text\": \"$STATUS_ICON <b>Status:</b> <font color=\\\"$STATUS_COLOR\\\"><b>$STATUS</b></font> - <b>$PASS_RATE%</b>\"
                           }
                         }
                       ]
@@ -205,7 +204,7 @@ jobs:
                       \"widgets\": [
                         {
                           \"textParagraph\": {
-                            \"text\": \"⏱️ <b>Duration:</b> $DURATION<br>🌿 <b>Branch:</b> <code>$BRANCH</code><br>🔖 <b>Commit:</b> <code>$COMMIT_SHA</code>\"
+                            \"text\": \"⏱️ <b>Duration:</b> $DURATION<br>🌿 <b>Branch:</b> <code>$BRANCH</code><br>🔖\"
                           }
                         }
                       ]
