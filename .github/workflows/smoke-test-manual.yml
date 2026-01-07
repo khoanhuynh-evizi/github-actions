@@ -73,6 +73,7 @@ jobs:
     - name: Build Google Chat Card
       if: always()
       id: chat
+      shell: bash
       run: |
         LOG="${{ steps.wdio.outputs.stdout }}"
 
@@ -80,75 +81,85 @@ jobs:
         FAILED=$(echo "$LOG" | grep -oE '[0-9]+\s+failing' | grep -oE '[0-9]+' | head -1 || echo 0)
         SKIPPED=$(echo "$LOG" | grep -oE '[0-9]+\s+skipped' | grep -oE '[0-9]+' | head -1 || echo 0)
 
-        STATUS="${{ job.status }}"
-        if [ "$STATUS" = "success" ]; then
-          STATUS_TEXT="PASSED"
-          STATUS_ICON="✅"
-          STATUS_COLOR="#0F9D58"
+        if [ "${{ job.status }}" = "success" ]; then
+          STATUS="PASSED"
+          COLOR="#0F9D58"
         else
-          STATUS_TEXT="FAILED"
-          STATUS_ICON="❌"
-          STATUS_COLOR="#D93025"
+          STATUS="FAILED"
+          COLOR="#D93025"
         fi
 
-        echo "payload<<EOF" >> $GITHUB_OUTPUT
-        cat <<EOF >> $GITHUB_OUTPUT
+        echo "payload<<EOF" >> "$GITHUB_OUTPUT"
+        cat <<EOF >> "$GITHUB_OUTPUT"
         {
-          "cardsV2": [{
-            "cardId": "wdio-report",
-            "card": {
-              "header": {
-                "title": "🔥 WebdriverIO Automation Report",
-                "subtitle": "📅 $(date '+%Y-%m-%d %H:%M:%S')"
-              },
-              "sections": [
-                {
-                  "widgets": [{
-                    "textParagraph": {
-                      "text": "<b>Status</b> : <font color=\"$STATUS_COLOR\">$STATUS_ICON $STATUS_TEXT</font><br/>\
-                        <b>Suite</b> : <tt>${{ github.event.inputs.suite || 'Regression Test' }}</tt><br/>\
-                        <b>Runner</b> : <tt>${{ github.event.inputs.runner || 'local' }}</tt><br/>\
-                        <b>Commit</b> : <tt>${GITHUB_SHA::8}</tt>"
-                    }
-                  }]
+          "cardsV2": [
+            {
+              "cardId": "wdio-smoke-report",
+              "card": {
+                "header": {
+                  "title": "🔥 WebdriverIO Smoke Test Report",
+                  "subtitle": "$(date '+%Y-%m-%d %H:%M:%S')"
                 },
-                {
-                  "widgets": [{
-                    "textParagraph": {
-                      "text": "✔ <b>Passed</b> : $PASSED<br/>\
-              ✖ <b>Failed</b> : $FAILED<br/>\
-            ➖ <b>Skipped</b> : $SKIPPED"
-                    }
-                  }]
-                },
-                {
-                  "widgets": [{
-                    "buttons": [{
-                      "text": "📄 View Allure Report",
-                      "onClick": {
-                        "openLink": {
-                          "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                "sections": [
+                  {
+                    "widgets": [
+                      {
+                        "textParagraph": {
+                          "text": "<tt>Status&nbsp;&nbsp;&nbsp;:</tt> <font color=\"$COLOR\"><b>$STATUS</b></font><br/>\
+          <tt>Suite&nbsp;&nbsp;&nbsp;&nbsp;:</tt> ${{ github.event.inputs.suite }}<br/>\
+          <tt>Branch&nbsp;&nbsp;:</tt> ${{ github.event.inputs.branch }}<br/>\
+          <tt>Commit&nbsp;&nbsp;:</tt> <tt>${GITHUB_SHA::8}</tt>"
                         }
                       }
-                    }]
-                  }]
-                }
-              ]
+                    ]
+                  },
+                  {
+                    "widgets": [
+                      {
+                        "textParagraph": {
+                          "text": "<b>Results</b><br/>\
+          ────────────<br/>\
+          <tt>Passed&nbsp;&nbsp;&nbsp;:</tt> $PASSED<br/>\
+          <tt>Failed&nbsp;&nbsp;&nbsp;:</tt> $FAILED<br/>\
+          <tt>Skipped&nbsp;&nbsp;:</tt> $SKIPPED"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "widgets": [
+                      {
+                        "buttons": [
+                          {
+                            "text": "📄 View CI Run / Allure",
+                            "onClick": {
+                              "openLink": {
+                                "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
             }
-          }]
+          ]
         }
         EOF
-  # ----------------------------
-    # 📤 SEND TO GOOGLE CHAT
-    # ----------------------------
+
+    # --------------------------------------------------
+    # 📤 Send Google Chat
+    # --------------------------------------------------
     - name: Send Google Chat Notification
       if: always()
       env:
         GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
       run: |
-        curl -X POST "$GCHAT_WEBHOOK" \
+        curl -s -X POST "$GCHAT_WEBHOOK" \
           -H "Content-Type: application/json" \
-          -d '${{ steps.chat.outputs.payload }}' 
+          -d '${{ steps.chat.outputs.payload }}'
     
     - name: Generate Allure Report
       if: always()
