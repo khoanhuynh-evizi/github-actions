@@ -54,8 +54,8 @@ jobs:
         cache-dependency-path: wdio/yarn.lock
 
     - name: Install dependencies
-      working-directory: wdio
       run: yarn install --frozen-lockfile
+      working-directory: wdio
 
     # -----------------------------
     # Run WDIO tests
@@ -65,6 +65,7 @@ jobs:
       uses: StarUbiquitous/command-output@v1.0.1
       with:
         run: |
+          cd wdio
           yarn test:local \
             --suite="${{ github.event.inputs.suite }}" \
             --features="${{ github.event.inputs.features }}" \
@@ -77,8 +78,8 @@ jobs:
 
     - name: WDIO Test Checker
       run: |
-        echo "${{ steps.wdio.outputs.stdout }}" > specs-reporter.log
-        if grep -E '[0-9]+\sfailed,' specs-reporter.log; then
+        echo "${{ steps.wdio.outputs.stdout }}" > wdio/specs-reporter.log
+        if grep -E '[0-9]+\sfailed,' wdio/specs-reporter.log; then
           exit 1
         fi
 
@@ -99,14 +100,6 @@ jobs:
       with:
         name: reports-html
         path: wdio/allure-report/
-        retention-days: 7
-
-    - name: Upload Raw Allure Results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: reports-allure
-        path: wdio/reports/
         retention-days: 7
 
     # -----------------------------
