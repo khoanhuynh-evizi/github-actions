@@ -71,7 +71,7 @@ jobs:
           exit 1
         fi
 
-    - name: Parse Allure Results (NO log parsing)
+    - name: Parse Allure Results
       if: always()
       run: |
         TOTAL=$(ls reports/*-result.json | wc -l)
@@ -149,23 +149,23 @@ jobs:
         GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
 
     - name: Notify Google Chat
-  if: always()
-  run: |
-    STATUS="PASSED"
-    STATUS_COLOR="#0F9D58"
-    STATUS_ICON="✅"
+      if: always()
+      run: |
+        STATUS="PASSED"
+        STATUS_COLOR="#0F9D58"
+        STATUS_ICON="✅"
 
-    if [ "${{ job.status }}" != "success" ]; then
-      STATUS="FAILED"
-      STATUS_COLOR="#DB4437"
-      STATUS_ICON="❌"
-    fi
+        if [ "${{ job.status }}" != "success" ]; then
+          STATUS="FAILED"
+          STATUS_COLOR="#DB4437"
+          STATUS_ICON="❌"
+        fi
 
-    export PASS_RATE STATUS STATUS_COLOR STATUS_ICON
+        export PASS_RATE STATUS STATUS_COLOR STATUS_ICON
 
-    envsubst < .github/googlechat/google-chat-card.json > payload.json
+        envsubst < .github/googlechat/google-chat-card.json > payload.json
 
-    curl -X POST "${{ secrets.GCHAT_WEBHOOK }}" \
-      -H "Content-Type: application/json" \
-      -d @payload.json
+        curl -X POST "${{ secrets.GCHAT_WEBHOOK }}" \
+          -H "Content-Type: application/json" \
+          -d @payload.json
 
