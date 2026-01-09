@@ -139,29 +139,52 @@ jobs:
     # -----------------------------
     # Parse Allure results
     # -----------------------------
-    - name: Parse Allure Results
+    - name: Parse Allure Summary (with debug)
       if: always()
       run: |
-        TOTAL=$(ls wdio/reports/*-result.json | wc -l)
-        PASSED=$(jq '[.status=="passed"] | length' wdio/reports/*-result.json)
-        FAILED=$(jq '[.status=="failed"] | length' wdio/reports/*-result.json)
-        SKIPPED=$(jq '[.status=="skipped"] | length' wdio/reports/*-result.json)
-        RETRIES=$(jq '[.status=="retries"] | length' wdio/reports/*-result.json)
+        SUMMARY="wdio/allure-report/widgets/summary.json"
+
+        echo "🔎 Checking Allure summary file..."
+        if [ ! -f "$SUMMARY" ]; then
+          echo "❌ summary.json not found at $SUMMARY"
+          ls -R wdio/allure-report || true
+          exit 1
+        fi
+
+        echo "📄 summary.json content:"
+        cat $SUMMARY | jq .
+
+        TOTAL=$(jq '.statistic.total' $SUMMARY)
+        PASSED=$(jq '.statistic.passed' $SUMMARY)
+        FAILED=$(jq '.statistic.failed' $SUMMARY)
+        SKIPPED=$(jq '.statistic.skipped' $SUMMARY)
+        BROKEN=$(jq '.statistic.broken' $SUMMARY)
+
+        echo "📊 Parsed statistics:"
+        echo "  - Total   : $TOTAL"
+        echo "  - Passed  : $PASSED"
+        echo "  - Failed  : $FAILED"
+        echo "  - Skipped : $SKIPPED"
+        echo "  - Broken  : $BROKEN"
 
         PASS_RATE=$(( PASSED * 100 / TOTAL ))
 
-        START=$(jq '.start' wdio/reports/*-result.json | sort -n | head -1)
-        STOP=$(jq '.stop' wdio/reports/*-result.json | sort -n | tail -1)
+        DURATION_MS=$(jq '.time.duration' $SUMMARY)
+        DURATION_SEC=$(( DURATION_MS / 1000 ))
+        DURATION=$(date -u -d @$DURATION_SEC +%H:%M:%S)
 
-        DURATION_SEC=$(( (STOP - START) / 1000 ))
+        echo "⏱️ Duration (ms): $DURATION_MS"
+        echo "⏱️ Duration (hh:mm:ss): $DURATION"
 
+        echo "PASS_RATE=$PASS_RATE" >> $GITHUB_ENV
         echo "TOTAL=$TOTAL" >> $GITHUB_ENV
         echo "PASSED=$PASSED" >> $GITHUB_ENV
         echo "FAILED=$FAILED" >> $GITHUB_ENV
         echo "SKIPPED=$SKIPPED" >> $GITHUB_ENV
-        echo "RETRIES=$RETRIES" >> $GITHUB_ENV
-        echo "PASS_RATE=$PASS_RATE" >> $GITHUB_ENV
-        echo "DURATION=$(date -u -d @$DURATION_SEC +%H:%M:%S)" >> $GITHUB_ENV
+        echo "BROKEN=$BROKEN" >> $GITHUB_ENV
+        echo "DURATION=$DURATION" >> $GITHUB_ENV
+
+        echo "✅ Allure summary parsed successfully"
 
     # -----------------------------
     # Notify Google Chat
