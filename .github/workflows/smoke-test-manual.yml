@@ -139,7 +139,7 @@ jobs:
     # -----------------------------
     # Parse Allure results
     # -----------------------------
-    - name: Parse Allure Summary (with debug)
+    - name: Parse Allure Summary
       if: always()
       run: |
         SUMMARY=wdio/allure-report/widgets/summary.json
@@ -167,7 +167,7 @@ jobs:
     # Notify Google Chat
     # -----------------------------
     - name: Notify Google Chat
-      if: ${{ job.status != 'cancelled' }}
+      if: always()
       env:
         TZ: Asia/Ho_Chi_Minh
       run: |
