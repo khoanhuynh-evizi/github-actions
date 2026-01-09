@@ -146,6 +146,7 @@ jobs:
         PASSED=$(jq '[.status=="passed"] | length' wdio/reports/*-result.json)
         FAILED=$(jq '[.status=="failed"] | length' wdio/reports/*-result.json)
         SKIPPED=$(jq '[.status=="skipped"] | length' wdio/reports/*-result.json)
+        RETRIES=$(jq '[.status=="retries"] | length' wdio/reports/*-result.json)
 
         PASS_RATE=$(( PASSED * 100 / TOTAL ))
 
@@ -158,6 +159,7 @@ jobs:
         echo "PASSED=$PASSED" >> $GITHUB_ENV
         echo "FAILED=$FAILED" >> $GITHUB_ENV
         echo "SKIPPED=$SKIPPED" >> $GITHUB_ENV
+        echo "RETRIES=$RETRIES" >> $GITHUB_ENV
         echo "PASS_RATE=$PASS_RATE" >> $GITHUB_ENV
         echo "DURATION=$(date -u -d @$DURATION_SEC +%H:%M:%S)" >> $GITHUB_ENV
 
@@ -179,7 +181,11 @@ jobs:
           STATUS_ICON="❌"
         fi
 
-        export STATUS STATUS_COLOR STATUS_ICON PASS_RATE
+        export STATUS STATUS_COLOR STATUS_ICON
+        export SUITE="${{ github.event.inputs.suite }}"
+        export BRANCH="${{ github.event.inputs.branch }}"
+        export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
+        export REPORT_URL="https://record360-report-s.web.app"
 
         envsubst < .github/googlechat/google-chat-card.json > payload.json
 
