@@ -74,7 +74,6 @@ jobs:
         CAPABILITIES: chrome
         MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ secrets.R360_DASHBOARD_URL_S }}
-      working-directory: wdio
 
     - name: WDIO Test Checker
       run: |
