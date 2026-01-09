@@ -167,7 +167,7 @@ jobs:
     # Notify Google Chat
     # -----------------------------
     - name: Notify Google Chat
-      if:  if: ${{ job.status != 'cancelled' }}
+      if: ${{ job.status != 'cancelled' }}
       env:
         TZ: Asia/Ho_Chi_Minh
       run: |
