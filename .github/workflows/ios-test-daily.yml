@@ -159,7 +159,7 @@ jobs:
 
       # -------------------- GOOGLE CHAT CARD --------------------
       - name: Notify Google Chat
-        if: ${{ job.status != 'cancelled' }}
+        if: always() 
         run: |
           STATUS="${{ job.status }}"
 
