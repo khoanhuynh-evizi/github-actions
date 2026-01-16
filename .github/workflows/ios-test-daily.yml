@@ -1,0 +1,210 @@
+name: iOS UI Test Daily
+run-name: ${{ github.actor }} is running XCUITests
+
+on:
+  schedule:
+    - cron: '0 0 * * 1-5' # 07:00 AM Vietnam Time (UTC+7), Mon–Fri
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: 'Runner type'
+        required: true
+        default: 'macos-latest'
+      useUrlTestData:
+        description: Enable download testdata from url
+        type: boolean
+        required: false
+        default: false
+      list_tests:
+        description: Input subset of tests
+        required: false
+        default: ''
+      ios-version:
+        description: 'iOS Version'
+        required: false
+        default: '18.2'
+      simulator-name:
+        description: 'Simulator Name'
+        required: false
+        default: 'iPhone 16'
+      xcode-version:
+        description: 'Xcode Version'
+        required: false
+        default: '16.2'
+      testing-branch:
+        description: 'Testing branch'
+        required: false
+        default: 'master'
+
+env:
+  PATH_TEST_SUITE: record360UITests/Resources/testRun.json
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+
+jobs:
+  build:
+    name: Test UI on iOS Simulator
+    runs-on: ${{ github.event.inputs.runner_type || 'macos-latest' }}
+
+    steps:
+      # -------------------- CHECKOUT --------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+          repository: ${{ secrets.WDIO_IOS_REPOS }}
+          ref: ${{ github.event.inputs.testing-branch || 'master' }}
+
+      - name: Setup SSH
+        uses: tanmancan/action-setup-ssh-agent-key@1.0.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+          ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
+
+      # -------------------- TEST DATA --------------------
+      - name: Download test data from Firebase
+        if: ${{ inputs.useUrlTestData == true }}
+        run: |
+          echo "${{ secrets.FIREBASE_SDK_KEY }}" > record360UITests/Firebase/firebase-sdk-key.json
+          cd record360UITests/Firebase
+          npm install
+          node firebase.js
+
+      # -------------------- XCODE & SIMULATOR --------------------
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ inputs.xcode-version || '16.2' }}
+
+      - name: Set Simulator Name
+        run: echo "SIMULATOR_NAME=${{ inputs.simulator-name || 'iPhone 16' }}" >> $GITHUB_ENV
+
+      - name: Boot Simulator
+        uses: futureware-tech/simulator-action@v4
+        with:
+          model: ${{ inputs.simulator-name || 'iPhone 16' }}
+          os: iOS
+          os_version: ${{ inputs.ios-version || '18.2' }}
+
+      # -------------------- DEPENDENCIES --------------------
+      - name: Install CocoaPods
+        run: |
+          pod install --repo-update
+          pod update Record360SDK
+
+      - name: Copy Configuration
+        run: sh ci_scripts/ci_configuration.sh
+
+      - name: Install xcpretty
+        run: |
+          echo "source 'https://rubygems.org'" > Gemfile
+          echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git'" >> Gemfile
+          bundle install
+          bundle exec xcpretty --version
+
+      # -------------------- RUN TESTS --------------------
+      - name: Execute Full Test Suite
+        if: ${{ inputs.list_tests == '' }}
+        run: |
+          chmod +x ./ci_scripts/run-testsuite.sh
+          ./ci_scripts/run-testsuite.sh \
+            --testBundle=record360UITests \
+            --path="$PATH_TEST_SUITE" \
+            --deviceName="$SIMULATOR_NAME"
+
+      - name: Execute Custom Tests
+        if: ${{ inputs.list_tests != '' }}
+        run: |
+          chmod +x ./ci_scripts/run-tests.sh
+          ./ci_scripts/run-tests.sh \
+            --testBundle=record360UITests \
+            --list-tests="${{ inputs.list_tests }}" \
+            --deviceName="$SIMULATOR_NAME"
+
+      # -------------------- PARSE XCRESULT --------------------
+      - name: Parse xcresult
+        id: xcresult
+        if: success() || failure()
+        run: |
+          RESULT_PATH="TestResult.xcresult"
+
+          if [ ! -d "$RESULT_PATH" ]; then
+            echo "❌ TestResult.xcresult not found"
+            exit 1
+          fi
+
+          JSON=$(xcrun xcresulttool get --path "$RESULT_PATH" --format json)
+
+          TOTAL=$(echo "$JSON" | jq '[.. | objects | select(has("testsCount")) | .testsCount] | max')
+          FAILED=$(echo "$JSON" | jq '[.. | objects | select(has("failureCount")) | .failureCount] | max')
+          SKIPPED=$(echo "$JSON" | jq '[.. | objects | select(has("skippedCount")) | .skippedCount] | max')
+
+          PASSED=$((TOTAL - FAILED - SKIPPED))
+
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
+      # -------------------- UPLOAD ARTIFACT --------------------
+      - name: Upload xcresult
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcresult
+          path: TestResult.xcresult
+          retention-days: 7
+
+      # -------------------- GOOGLE CHAT CARD --------------------
+      - name: Notify Google Chat
+        if: always() 
+        run: |
+          STATUS="${{ job.status }}"
+
+          if [ "$STATUS" = "success" ]; then
+            STATUS_TEXT="SUCCESS"
+            COLOR="#188038"
+            ICON="https://fonts.gstatic.com/s/i/materialicons/check_circle/v6/24px.svg"
+          else
+            STATUS_TEXT="FAILED"
+            COLOR="#D93025"
+            ICON="https://fonts.gstatic.com/s/i/materialicons/error/v6/24px.svg"
+          fi
+
+          curl -X POST -H "Content-Type: application/json" \
+          -d "{
+            \"cardsV2\": [{
+              \"card\": {
+                \"header\": {
+                  \"title\": \"📱 iOS UI Test\",
+                  \"subtitle\": \"${STATUS_TEXT}\",
+                  \"imageUrl\": \"${ICON}\",
+                  \"imageType\": \"CIRCLE\"
+                },
+                \"sections\": [{
+                  \"widgets\": [
+                    { \"decoratedText\": { \"text\": \"<b>Status:</b> <font color='${COLOR}'>${STATUS_TEXT}</font>\" }},
+                    { \"decoratedText\": { \"text\": \"✅ <b>Passed:</b> ${{ steps.xcresult.outputs.passed }}\" }},
+                    { \"decoratedText\": { \"text\": \"❌ <b>Failed:</b> ${{ steps.xcresult.outputs.failed }}\" }},
+                    { \"decoratedText\": { \"text\": \"⏭️ <b>Skipped:</b> ${{ steps.xcresult.outputs.skipped }}\" }},
+                    { \"decoratedText\": { \"text\": \"🌿 <b>Branch:</b> ${{ github.event.inputs.testing-branch || 'master' }}\" }},
+                    {
+                      \"buttonList\": {
+                        \"buttons\": [{
+                          \"text\": \"Open GitHub Action\",
+                          \"onClick\": {
+                            \"openLink\": {
+                              \"url\": \"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                            }
+                          }
+                        }]
+                      }
+                    }
+                  ]
+                }]
+              }
+            }]
+          }" \
+          ${{ secrets.GCHAT_WEBHOOK }}
