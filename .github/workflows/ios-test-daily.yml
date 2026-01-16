@@ -138,9 +138,18 @@ jobs:
 
           JSON=$(xcrun xcresulttool get --path "$RESULT_PATH" --format json)
 
-          TOTAL=$(echo "$JSON" | jq '[.. | objects | select(has("testsCount")) | .testsCount] | max')
-          FAILED=$(echo "$JSON" | jq '[.. | objects | select(has("failureCount")) | .failureCount] | max')
-          SKIPPED=$(echo "$JSON" | jq '[.. | objects | select(has("skippedCount")) | .skippedCount] | max')
+          get_max_value () {
+            echo "$JSON" | jq -r "
+              [.. | objects
+                | select(has(\"$1\"))
+                | .[$1]._value | tonumber
+              ] | max // 0
+            "
+          }
+
+          TOTAL=$(get_max_value testsCount)
+          FAILED=$(get_max_value failureCount)
+          SKIPPED=$(get_max_value skippedCount)
 
           PASSED=$((TOTAL - FAILED - SKIPPED))
 
@@ -173,7 +182,8 @@ jobs:
             ICON="https://fonts.gstatic.com/s/i/materialicons/error/v6/24px.svg"
           fi
 
-          curl -X POST -H "Content-Type: application/json" \
+          curl -X POST "${{ secrets.GCHAT_WEBHOOK }}" \
+          -H "Content-Type: application/json" \
           -d "{
             \"cardsV2\": [{
               \"card\": {
@@ -206,5 +216,4 @@ jobs:
                 }]
               }
             }]
-          }" \
-          ${{ secrets.GCHAT_WEBHOOK }}
+          }"
