@@ -1,5 +1,6 @@
 name: Smoke Test Manual (-s)
-
+permissions:
+  contents: write
 on:
   workflow_dispatch:
     inputs:
