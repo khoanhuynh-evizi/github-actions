@@ -29,23 +29,43 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    # =========================
+    # CHECKOUT WDIO REPO
+    # =========================
     - name: Checkout WDIO Repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         repository: ${{ secrets.WDIO_REPOS }}
         token: ${{ secrets.WDIO_ACCESS_TOKEN }}
         ref: ${{ github.event.inputs.branch }}
 
+    # =========================
+    # 🔥 NEW: RESTORE ALLURE HISTORY
+    # =========================
+    # 👉 Lấy history từ gh-pages để Allure có dữ liệu vẽ Trend
+    - name: Restore Allure history
+      uses: actions/checkout@v4
+      with:
+        ref: gh-pages                # ⭐ BRANCH DÙNG ĐỂ LƯU HISTORY
+        path: allure-history
+      continue-on-error: true       # ⭐ RUN ĐẦU TIÊN CHƯA CÓ HISTORY
+
+    # =========================
+    # NODE SETUP
+    # =========================
     - name: Use Node.js 20.x
       uses: actions/setup-node@v4
       with:
         node-version: 20.x
-        cache: 'yarn'
+        cache: yarn
         cache-dependency-path: yarn.lock
 
     - name: Install dependencies
       run: yarn install --frozen-lockfile
 
+    # =========================
+    # RUN TEST (MANUAL INPUT)
+    # =========================
     - name: Run WebDriverIO Tests
       uses: StarUbiquitous/command-output@v1.0.1
       id: wdio
@@ -60,6 +80,9 @@ jobs:
         MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ secrets.R360_DASHBOARD_URL_S }}
 
+    # =========================
+    # TEST CHECKER
+    # =========================
     - name: WDIO Test Checker
       timeout-minutes: 330
       run: |
@@ -70,14 +93,41 @@ jobs:
         if [ ! -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
           exit 1
         fi
-    
+
+    # =========================
+    # 🔥 UPDATED: GENERATE ALLURE REPORT WITH HISTORY
+    # =========================
     - name: Generate Allure Report
       if: always()
       uses: simple-elf/allure-report-action@v1.13
       with:
         allure_results: reports
         allure_report: allure-report
-        allure_history: allure-history
+        allure_history: allure-history     # ⭐ QUAN TRỌNG: ENABLE TREND
+
+    # =========================
+    # 🔥 NEW: SAVE HISTORY FOR NEXT RUN
+    # =========================
+    - name: Save Allure history
+      if: always()
+      run: |
+        mkdir -p allure-history
+        cp -r allure-report/history allure-history/
+
+    # =========================
+    # 🔥 NEW: PUBLISH HISTORY TO gh-pages
+    # =========================
+    - name: Publish Allure history
+      if: always()
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_branch: gh-pages
+        publish_dir: allure-history
+
+    # =========================
+    # ARTIFACTS (GIỮ NGUYÊN)
+    # =========================
     - name: Upload HTML Report
       if: success() || failure()
       uses: actions/upload-artifact@v4
@@ -94,7 +144,10 @@ jobs:
         path: reports/
         retention-days: 7     
 
-    - name: Prepare dated report & create deploy folder
+    # =========================
+    # FIREBASE DEPLOY
+    # =========================
+    - name: Prepare deploy folder
       if: always()
       run: |
         mkdir -p deploy
