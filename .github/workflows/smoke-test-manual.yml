@@ -1,8 +1,5 @@
 name: Smoke Test Manual (-s)
 
-permissions:
-  contents: write   # 🔥 NEW: để push gh-pages lưu history
-
 on:
   workflow_dispatch:
     inputs:
@@ -32,52 +29,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # =========================
-    # CHECKOUT WDIO REPO (GIỮ NGUYÊN)
-    # =========================
     - name: Checkout WDIO Repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
       with:
         repository: ${{ secrets.WDIO_REPOS }}
         token: ${{ secrets.WDIO_ACCESS_TOKEN }}
         ref: ${{ github.event.inputs.branch }}
 
-    # =========================
-    # 🔥 NEW: RESTORE ALLURE HISTORY
-    # =========================
-    - name: Restore Allure history
-      uses: actions/checkout@v4
-      with:
-        ref: gh-pages
-        path: .allure-history
-      continue-on-error: true   # run đầu chưa có history
-
-    # =========================
-    # 🔥 NEW: INJECT HISTORY INTO RESULTS
-    # =========================
-    - name: Inject history into allure results
-      run: |
-        if [ -d ".allure-history/history" ]; then
-          mkdir -p reports/history
-          cp -r .allure-history/history reports/
-        fi
-
-    # =========================
-    # NODE SETUP (GIỮ NGUYÊN)
-    # =========================
     - name: Use Node.js 20.x
       uses: actions/setup-node@v4
       with:
         node-version: 20.x
-        cache: yarn
+        cache: 'yarn'
         cache-dependency-path: yarn.lock
 
     - name: Install dependencies
       run: yarn install --frozen-lockfile
 
-    # =========================
-    # RUN TEST (GIỮ NGUYÊN)
-    # =========================
+    # Download previous Allure history from Firebase
+    - name: Download previous Allure history
+      if: always()
+      continue-on-error: true
+      run: |
+        mkdir -p allure-results/history
+        # Try to download history folder from Firebase using gsutil or wget
+        # This step depends on how you structure your Firebase hosting
+        echo "Attempting to download previous history..."
+
+    # Alternative: Use GitHub Pages or artifacts for history
+    - name: Download Allure history from artifacts
+      if: always()
+      continue-on-error: true
+      uses: dawidd6/action-download-artifact@v2
+      with:
+        workflow: ${{ github.workflow }}
+        name: allure-history
+        path: allure-results/history
+        if_no_artifact_found: ignore
+
     - name: Run WebDriverIO Tests
       uses: StarUbiquitous/command-output@v1.0.1
       id: wdio
@@ -92,53 +81,35 @@ jobs:
         MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ secrets.R360_DASHBOARD_URL_S }}
 
-    # =========================
-    # TEST CHECKER (GIỮ NGUYÊN)
-    # =========================
     - name: WDIO Test Checker
       timeout-minutes: 330
       run: |
         cat > specs-reporter.log <<EOL
         ${{ steps.wdio.outputs.stdout }}
         EOL
-
-        if grep -E "[0-9]+ failed" specs-reporter.log; then
+        
+        if [ ! -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
           exit 1
         fi
+    
+    # Copy history to reports folder before generating new report
+    - name: Copy history to reports
+      if: always()
+      continue-on-error: true
+      run: |
+        if [ -d "allure-results/history" ]; then
+          cp -r allure-results/history reports/history
+        fi
 
-    # =========================
-    # 🔥 FIX: GENERATE ALLURE REPORT (TREND)
-    # =========================
     - name: Generate Allure Report
       if: always()
       uses: simple-elf/allure-report-action@v1.13
       with:
         allure_results: reports
         allure_report: allure-report
+        allure_history: allure-history
+        keep_reports: 20  # Keep last 20 reports for trending
 
-    # =========================
-    # 🔥 NEW: SAVE HISTORY FOR NEXT RUN
-    # =========================
-    - name: Save Allure history
-      if: always()
-      run: |
-        mkdir -p .allure-history/history
-        cp -r allure-report/history/* .allure-history/history/
-
-    # =========================
-    # 🔥 NEW: PUBLISH HISTORY TO gh-pages
-    # =========================
-    - name: Publish Allure history
-      if: always()
-      uses: peaceiris/actions-gh-pages@v4
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_branch: gh-pages
-        publish_dir: .allure-history
-
-    # =========================
-    # ARTIFACTS (GIỮ NGUYÊN)
-    # =========================
     - name: Upload HTML Report
       if: success() || failure()
       uses: actions/upload-artifact@v4
@@ -155,15 +126,25 @@ jobs:
         path: reports/
         retention-days: 7
 
-    # =========================
-    # FIREBASE DEPLOY (GIỮ NGUYÊN 100%)
-    # =========================
-    - name: Prepare deploy folder
+    # Upload history for next run
+    - name: Upload Allure history
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: allure-history
+        path: allure-history/
+        retention-days: 30
+
+    - name: Prepare dated report & create deploy folder
       if: always()
       run: |
         mkdir -p deploy
         cp -r allure-report/* deploy/
-
+        # Also copy history to deploy folder
+        if [ -d "allure-history" ]; then
+          cp -r allure-history deploy/history
+        fi
+  
     - name: Create firebase.json & .firebaserc
       if: always()
       run: |
