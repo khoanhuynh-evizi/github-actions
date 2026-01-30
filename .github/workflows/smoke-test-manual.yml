@@ -1,6 +1,8 @@
 name: Smoke Test Manual (-s)
+
 permissions:
-  contents: write
+  contents: write   # 🔥 BẮT BUỘC để push gh-pages (Allure history)
+
 on:
   workflow_dispatch:
     inputs:
@@ -41,15 +43,15 @@ jobs:
         ref: ${{ github.event.inputs.branch }}
 
     # =========================
-    # 🔥 NEW: RESTORE ALLURE HISTORY
+    # 🔥 RESTORE ALLURE HISTORY (FROM gh-pages)
     # =========================
-    # 👉 Lấy history từ gh-pages để Allure có dữ liệu vẽ Trend
+    # 👉 Lấy dữ liệu cũ để Allure vẽ Trend
     - name: Restore Allure history
       uses: actions/checkout@v4
       with:
-        ref: gh-pages                # ⭐ BRANCH DÙNG ĐỂ LƯU HISTORY
+        ref: gh-pages
         path: allure-history
-      continue-on-error: true       # ⭐ RUN ĐẦU TIÊN CHƯA CÓ HISTORY
+      continue-on-error: true   # Run đầu chưa có history thì bỏ qua
 
     # =========================
     # NODE SETUP
@@ -65,7 +67,7 @@ jobs:
       run: yarn install --frozen-lockfile
 
     # =========================
-    # RUN TEST (MANUAL INPUT)
+    # RUN TEST
     # =========================
     - name: Run WebDriverIO Tests
       uses: StarUbiquitous/command-output@v1.0.1
@@ -85,65 +87,57 @@ jobs:
     # TEST CHECKER
     # =========================
     - name: WDIO Test Checker
-      timeout-minutes: 330
       run: |
         cat > specs-reporter.log <<EOL
         ${{ steps.wdio.outputs.stdout }}
         EOL
-        
-        if [ ! -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
+
+        if grep -E '[0-9]+\sfailed,' specs-reporter.log; then
           exit 1
         fi
 
     # =========================
-    # 🔥 UPDATED: GENERATE ALLURE REPORT WITH HISTORY
+    # 🔥 GENERATE ALLURE REPORT (WITH HISTORY)
     # =========================
+    # 👉 Step QUAN TRỌNG NHẤT để enable Trend
     - name: Generate Allure Report
       if: always()
       uses: simple-elf/allure-report-action@v1.13
       with:
         allure_results: reports
         allure_report: allure-report
-        allure_history: allure-history     # ⭐ QUAN TRỌNG: ENABLE TREND
+        allure_history: allure-history   # 🔥 MUST HAVE
 
     # =========================
-    # 🔥 NEW: SAVE HISTORY FOR NEXT RUN
+    # 🔥 PUBLISH ALLURE HISTORY
     # =========================
-    - name: Save Allure history
-      if: always()
-      run: |
-        mkdir -p allure-history
-        cp -r allure-report/history allure-history/
-
-    # =========================
-    # 🔥 NEW: PUBLISH HISTORY TO gh-pages
-    # =========================
+    # 👉 Publish ĐÚNG folder history (KHÔNG bọc thêm level)
     - name: Publish Allure history
       if: always()
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_branch: gh-pages
-        publish_dir: allure-history
+        publish_dir: allure-history/history   # 🔥 CHUẨN ALLURE
 
     # =========================
-    # ARTIFACTS (GIỮ NGUYÊN)
+    # ARTIFACTS
     # =========================
     - name: Upload HTML Report
-      if: success() || failure()
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: reports-html
+        name: allure-html
         path: allure-report/
         retention-days: 7
 
     - name: Upload Raw Allure Results
-      if: success() || failure()
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: reports-allure
+        name: allure-results
         path: reports/
-        retention-days: 7     
+        retention-days: 7
 
     # =========================
     # FIREBASE DEPLOY
@@ -153,8 +147,8 @@ jobs:
       run: |
         mkdir -p deploy
         cp -r allure-report/* deploy/
-  
-    - name: Create firebase.json & .firebaserc
+
+    - name: Create firebase config
       if: always()
       run: |
         echo '{
@@ -163,6 +157,7 @@ jobs:
             "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
           }
         }' > firebase.json
+
         echo '{
           "projects": {
             "default": "record360-report-s"
@@ -171,7 +166,7 @@ jobs:
 
     - name: Set up Firebase credentials
       if: always()
-      run: echo '${{ secrets.L_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
+      run: echo '${{ secrets.L_FIREBASE_SERVICE_ACCOUNT }}' > service-account.json
 
     - name: Deploy Allure Report to Firebase Hosting
       if: always()
@@ -179,4 +174,4 @@ jobs:
       with:
         args: deploy --only hosting --project record360-report-s
       env:
-        GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
+        GOOGLE_APPLICATION_CREDENTIALS: service-account.json
