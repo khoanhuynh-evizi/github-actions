@@ -1,7 +1,7 @@
 name: Smoke Test Manual (-s)
 
 permissions:
-  contents: write   # 🔥 BẮT BUỘC để push gh-pages (Allure history)
+  contents: write   # 🔥 NEW: để push gh-pages lưu history
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
 
     steps:
     # =========================
-    # CHECKOUT WDIO REPO
+    # CHECKOUT WDIO REPO (GIỮ NGUYÊN)
     # =========================
     - name: Checkout WDIO Repository
       uses: actions/checkout@v4
@@ -43,18 +43,27 @@ jobs:
         ref: ${{ github.event.inputs.branch }}
 
     # =========================
-    # 🔥 RESTORE ALLURE HISTORY (FROM gh-pages)
+    # 🔥 NEW: RESTORE ALLURE HISTORY
     # =========================
-    # 👉 Lấy dữ liệu cũ để Allure vẽ Trend
     - name: Restore Allure history
       uses: actions/checkout@v4
       with:
         ref: gh-pages
-        path: allure-history
-      continue-on-error: true   # Run đầu chưa có history thì bỏ qua
+        path: .allure-history
+      continue-on-error: true   # run đầu chưa có history
 
     # =========================
-    # NODE SETUP
+    # 🔥 NEW: INJECT HISTORY INTO RESULTS
+    # =========================
+    - name: Inject history into allure results
+      run: |
+        if [ -d ".allure-history/history" ]; then
+          mkdir -p reports/history
+          cp -r .allure-history/history/* reports/history/
+        fi
+
+    # =========================
+    # NODE SETUP (GIỮ NGUYÊN)
     # =========================
     - name: Use Node.js 20.x
       uses: actions/setup-node@v4
@@ -67,7 +76,7 @@ jobs:
       run: yarn install --frozen-lockfile
 
     # =========================
-    # RUN TEST
+    # RUN TEST (GIỮ NGUYÊN)
     # =========================
     - name: Run WebDriverIO Tests
       uses: StarUbiquitous/command-output@v1.0.1
@@ -84,63 +93,70 @@ jobs:
         R360_DASHBOARD_URL: ${{ secrets.R360_DASHBOARD_URL_S }}
 
     # =========================
-    # TEST CHECKER
+    # TEST CHECKER (GIỮ NGUYÊN)
     # =========================
     - name: WDIO Test Checker
+      timeout-minutes: 330
       run: |
         cat > specs-reporter.log <<EOL
         ${{ steps.wdio.outputs.stdout }}
         EOL
 
-        if grep -E '[0-9]+\sfailed,' specs-reporter.log; then
+        if grep -E "[0-9]+ failed" specs-reporter.log; then
           exit 1
         fi
 
     # =========================
-    # 🔥 GENERATE ALLURE REPORT (WITH HISTORY)
+    # 🔥 FIX: GENERATE ALLURE REPORT (TREND)
     # =========================
-    # 👉 Step QUAN TRỌNG NHẤT để enable Trend
     - name: Generate Allure Report
       if: always()
       uses: simple-elf/allure-report-action@v1.13
       with:
         allure_results: reports
         allure_report: allure-report
-        allure_history: allure-history   # 🔥 MUST HAVE
 
     # =========================
-    # 🔥 PUBLISH ALLURE HISTORY
+    # 🔥 NEW: SAVE HISTORY FOR NEXT RUN
     # =========================
-    # 👉 Publish ĐÚNG folder history (KHÔNG bọc thêm level)
+    - name: Save Allure history
+      if: always()
+      run: |
+        mkdir -p .allure-history/history
+        cp -r allure-report/history/* .allure-history/history/
+
+    # =========================
+    # 🔥 NEW: PUBLISH HISTORY TO gh-pages
+    # =========================
     - name: Publish Allure history
       if: always()
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_branch: gh-pages
-        publish_dir: allure-history/history   # 🔥 CHUẨN ALLURE
+        publish_dir: .allure-history
 
     # =========================
-    # ARTIFACTS
+    # ARTIFACTS (GIỮ NGUYÊN)
     # =========================
     - name: Upload HTML Report
-      if: always()
+      if: success() || failure()
       uses: actions/upload-artifact@v4
       with:
-        name: allure-html
+        name: reports-html
         path: allure-report/
         retention-days: 7
 
     - name: Upload Raw Allure Results
-      if: always()
+      if: success() || failure()
       uses: actions/upload-artifact@v4
       with:
-        name: allure-results
+        name: reports-allure
         path: reports/
         retention-days: 7
 
     # =========================
-    # FIREBASE DEPLOY
+    # FIREBASE DEPLOY (GIỮ NGUYÊN 100%)
     # =========================
     - name: Prepare deploy folder
       if: always()
@@ -148,7 +164,7 @@ jobs:
         mkdir -p deploy
         cp -r allure-report/* deploy/
 
-    - name: Create firebase config
+    - name: Create firebase.json & .firebaserc
       if: always()
       run: |
         echo '{
@@ -157,7 +173,6 @@ jobs:
             "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
           }
         }' > firebase.json
-
         echo '{
           "projects": {
             "default": "record360-report-s"
@@ -166,7 +181,7 @@ jobs:
 
     - name: Set up Firebase credentials
       if: always()
-      run: echo '${{ secrets.L_FIREBASE_SERVICE_ACCOUNT }}' > service-account.json
+      run: echo '${{ secrets.L_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
 
     - name: Deploy Allure Report to Firebase Hosting
       if: always()
@@ -174,4 +189,4 @@ jobs:
       with:
         args: deploy --only hosting --project record360-report-s
       env:
-        GOOGLE_APPLICATION_CREDENTIALS: service-account.json
+        GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
