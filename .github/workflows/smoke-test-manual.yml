@@ -1,24 +1,9 @@
-name: Smoke Test Manual (-s)
+name: Smoke Test Daily (-s)
 
 on:
+  schedule:
+    - cron: '0 20 * * 1-5' # 03:00h every night UTC+7
   workflow_dispatch:
-    inputs:
-      suite:
-        description: 'Suite name'
-        required: true
-        default: 'Smoke Test'
-      features:
-        description: 'Feature (Optional)'
-        required: false
-        default: ''
-      featureTestCases:
-        description: 'Specific testcase (Optional)'
-        required: false
-        default: ''
-      branch:
-        description: 'Test branch'
-        required: true
-        default: 'master'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -29,78 +14,125 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout WDIO Repository
-      uses: actions/checkout@v3
+    - name: Checkout workflow repo
+      uses: actions/checkout@v4
+
+    - name: Checkout WDIO repository
+      uses: actions/checkout@v4
       with:
         repository: ${{ secrets.WDIO_REPOS }}
         token: ${{ secrets.WDIO_ACCESS_TOKEN }}
-        ref: ${{ github.event.inputs.branch }}
+        ref: master
+        path: wdio
+
+    - name: Free disk space
+      run: |
+        df -h
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        sudo apt-get clean
+        df -h    
 
     - name: Use Node.js 20.x
       uses: actions/setup-node@v4
       with:
         node-version: 20.x
-        cache: 'yarn'
-        cache-dependency-path: yarn.lock
+        cache: yarn
+        cache-dependency-path: wdio/yarn.lock
 
     - name: Install dependencies
       run: yarn install --frozen-lockfile
+      working-directory: wdio
+
+    - name: Clean old reports
+      run: rm -rf wdio/reports wdio/allure-report wdio/allure-history specs-reporter.log
 
     - name: Run WebDriverIO Tests
-      uses: StarUbiquitous/command-output@v1.0.1
       id: wdio
-      with:
-        run: |
-          yarn test:local \
-            --suite="${{ github.event.inputs.suite }}" \
-            --features="${{ github.event.inputs.features }}" \
-            --featureTestCases="${{ github.event.inputs.featureTestCases }}"
+      run: |
+        cd wdio
+        yarn test:local --suite="Smoke Test" \
+          2>&1 | tee ../specs-reporter.log
       env:
         CAPABILITIES: chrome
         MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ secrets.R360_DASHBOARD_URL_S }}
 
     - name: WDIO Test Checker
-      timeout-minutes: 330
+      if: always()
       run: |
-        cat > specs-reporter.log <<EOL
-        ${{ steps.wdio.outputs.stdout }}
-        EOL
-        
-        if [ ! -z "$(egrep '[0-9]+\sfailed,\s' specs-reporter.log)" ]; then
+        if grep -qE "[0-9]+\s+failed" specs-reporter.log; then
           exit 1
         fi
-    
+    - name: Upload spec reporter log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: specs-reporter-log
+        path: specs-reporter.log
+        retention-days: 7
+
+    - name: Get Allure history
+      if: always()
+      uses: actions/checkout@v4
+      continue-on-error: true
+      with:
+        repository: ${{ secrets.WDIO_REPOS }}
+        token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+        ref: allure-history
+        path: report-history
+
+    - name: Copy previous Allure history to reports (for trend graphs)
+      if: always()
+      run: |
+        mkdir -p wdio/reports/history
+        cp -r report-history/allure-history/last-history/. wdio/reports/history 2>/dev/null || \
+        cp -r report-history/last-history/. wdio/reports/history 2>/dev/null || true
+
     - name: Generate Allure Report
       if: always()
-      uses: simple-elf/allure-report-action@v1.13
+      run: npx --yes allure-commandline@2.37.0 generate wdio/reports --clean -o wdio/allure-report
+
+    - name: Save history for next run
+      if: always()
+      run: |
+        mkdir -p allure-history-branch/allure-history
+        cp -r wdio/allure-report/history allure-history-branch/allure-history/last-history
+
+    - name: Push report history to branch
+      if: always()
+      uses: peaceiris/actions-gh-pages@v4
       with:
-        allure_results: reports
-        allure_report: allure-report
-        allure_history: allure-history
-    - name: Upload HTML Report
+        personal_token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+        external_repository: ${{ secrets.WDIO_REPOS }}
+        publish_branch: allure-history
+        publish_dir: allure-history-branch
+
+    - name: Prepare deploy folder
+      if: always()
+      run: |
+        mkdir -p deploy
+        cp -r wdio/allure-report/* deploy/
+
+    - name: Upload Allure HTML
       if: success() || failure()
       uses: actions/upload-artifact@v4
       with:
         name: reports-html
-        path: allure-report/
+        path: wdio/allure-report/
         retention-days: 7
 
-    - name: Upload Raw Allure Results
+    - name: Upload Allure raw results
       if: success() || failure()
       uses: actions/upload-artifact@v4
       with:
         name: reports-allure
-        path: reports/
-        retention-days: 7     
+        path: wdio/reports/
+        retention-days: 7
 
-    - name: Prepare dated report & create deploy folder
-      if: always()
-      run: |
-        mkdir -p deploy
-        cp -r allure-report/* deploy/
-  
-    - name: Create firebase.json & .firebaserc
+    - name: Create firebase config
       if: always()
       run: |
         echo '{
@@ -109,20 +141,85 @@ jobs:
             "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
           }
         }' > firebase.json
+
         echo '{
           "projects": {
-            "default": "record360-report-s"
+            "default": "record360-report"
           }
         }' > .firebaserc
 
     - name: Set up Firebase credentials
       if: always()
-      run: echo '${{ secrets.L_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
+      run: echo '${{ secrets.CHINH_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
 
     - name: Deploy Allure Report to Firebase Hosting
       if: always()
       uses: w9jds/firebase-action@v13.27.0
       with:
-        args: deploy --only hosting --project record360-report-s
+        args: deploy --only hosting --project record360-report
       env:
         GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
+
+    - name: Parse Spec Reporter Result
+      if: always()
+      run: |
+        LOG=specs-reporter.log
+
+        if ! grep -q "Spec Files:" "$LOG"; then
+          echo "Spec summary not found!"
+          echo "TOTAL=0" >> $GITHUB_ENV
+          echo "PASSED=0" >> $GITHUB_ENV
+          echo "FAILED=0" >> $GITHUB_ENV
+          echo "SKIPPED=0" >> $GITHUB_ENV
+          echo "RETRIES=0" >> $GITHUB_ENV
+          echo "DURATION=00:00:00" >> $GITHUB_ENV
+          exit 0
+        fi
+
+        LINE=$(grep "Spec Files:" "$LOG" | tail -1)
+
+        PASSED=$(echo "$LINE" | grep -oP '\d+(?=\s+passed)' || echo 0)
+        RETRIES=$(echo "$LINE" | grep -oP '\d+(?=\s+retries)' || echo 0)
+        FAILED=$(echo "$LINE" | grep -oP '\d+(?=\s+failed)' || echo 0)
+        SKIPPED=$(echo "$LINE" | grep -oP '\d+(?=\s+skipped)' || echo 0)
+        TOTAL=$(echo "$LINE" | grep -oP '\d+(?=\s+total)' || echo 0)
+        DURATION=$(echo "$LINE" | grep -oP '\d{2}:\d{2}:\d{2}' || echo "00:00:00")
+
+        PASS_RATE=$(( PASSED * 100 / (TOTAL - SKIPPED)))
+
+        echo "TOTAL=$TOTAL" >> $GITHUB_ENV
+        echo "PASSED=$PASSED" >> $GITHUB_ENV
+        echo "FAILED=$FAILED" >> $GITHUB_ENV
+        echo "SKIPPED=$SKIPPED" >> $GITHUB_ENV
+        echo "RETRIES=$RETRIES" >> $GITHUB_ENV
+        echo "PASS_RATE=$PASS_RATE" >> $GITHUB_ENV
+        echo "DURATION=$DURATION" >> $GITHUB_ENV
+
+    - name: Notify Google Chat
+      if: always()
+      env:
+        TZ: Asia/Ho_Chi_Minh
+      run: |
+        STATUS="PASSED"
+        STATUS_COLOR="#0F9D58"
+        STATUS_ICON="✅"
+
+        if [ "${{ job.status }}" = "cancelled" ]; then
+          STATUS="CANCELLED"
+          STATUS_COLOR="#F4B400"
+          STATUS_ICON="🟡"
+        elif [ "${{ job.status }}" != "success" ]; then
+          STATUS="FAILED"
+          STATUS_COLOR="#DB4437"
+          STATUS_ICON="❌"
+        fi
+
+        export STATUS STATUS_COLOR STATUS_ICON
+        export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
+        export REPORT_URL="https://record360-report.web.app"
+
+        envsubst < .github/googleChat/dashboard-card.json > payload.json
+
+        curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
+          -H "Content-Type: application/json" \
+          -d @payload.json
