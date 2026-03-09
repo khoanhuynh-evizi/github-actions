@@ -141,7 +141,7 @@ jobs:
         retention-days: 7
 
     - name: Get Allure history
-      if: always()
+      if: ${{ !cancelled() }}
       uses: actions/checkout@v4
       continue-on-error: true
       with:
@@ -151,24 +151,24 @@ jobs:
         path: report-history
 
     - name: Copy previous Allure history to reports (for trend graphs)
-      if: always()
+      if: ${{ !cancelled() }}
       run: |
         mkdir -p wdio/reports/history
         cp -r report-history/allure-history/last-history/. wdio/reports/history 2>/dev/null || \
         cp -r report-history/last-history/. wdio/reports/history 2>/dev/null || true
 
     - name: Generate Allure Report
-      if: always()
+      if: ${{ !cancelled() }}
       run: npx --yes allure-commandline@2.37.0 generate wdio/reports --clean -o wdio/allure-report
 
     - name: Save history for next run
-      if: always()
+      if: ${{ !cancelled() }}
       run: |
         mkdir -p allure-history-branch/allure-history
         cp -r wdio/allure-report/history allure-history-branch/allure-history/last-history
 
     - name: Push report history to branch
-      if: always()
+      if: ${{ !cancelled() }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         personal_token: ${{ secrets.WDIO_ACCESS_TOKEN }}
@@ -177,13 +177,13 @@ jobs:
         publish_dir: allure-history-branch
 
     - name: Prepare deploy folder
-      if: always()
+      if: ${{ !cancelled() }}
       run: |
         mkdir -p deploy
         cp -r wdio/allure-report/* deploy/
 
     - name: Upload Allure HTML
-      if: success() || failure()
+      if: ${{ !cancelled() }}
       uses: actions/upload-artifact@v4
       with:
         name: reports-html
@@ -191,7 +191,7 @@ jobs:
         retention-days: 7
 
     - name: Upload Allure raw results
-      if: success() || failure()
+      if: ${{ !cancelled() }}
       uses: actions/upload-artifact@v4
       with:
         name: reports-allure
@@ -199,7 +199,7 @@ jobs:
         retention-days: 7
 
     - name: Create firebase config
-      if: always()
+      if: ${{ !cancelled() }}
       run: |
         echo '{
           "hosting": {
@@ -215,11 +215,11 @@ jobs:
         }' > .firebaserc
 
     - name: Set up Firebase credentials
-      if: always()
+      if: ${{ !cancelled() }}
       run: echo '${{ secrets.CHINH_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
 
     - name: Deploy Allure Report to Firebase Hosting
-      if: always()
+      if: ${{ !cancelled() }}
       uses: w9jds/firebase-action@v13.27.0
       with:
         args: deploy --only hosting --project record360-report
@@ -227,12 +227,10 @@ jobs:
         GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
 
     - name: Parse Spec Reporter Result
-      if: always()
+      if: ${{ !cancelled() }}
       run: |
         LOG=specs-reporter.log
-
         if ! grep -q "Spec Files:" "$LOG"; then
-          echo "Spec summary not found!"
           echo "TOTAL=0" >> $GITHUB_ENV
           echo "PASSED=0" >> $GITHUB_ENV
           echo "FAILED=0" >> $GITHUB_ENV
@@ -262,7 +260,7 @@ jobs:
         echo "DURATION=$DURATION" >> $GITHUB_ENV
 
     - name: Notify Google Chat
-      if: always()
+      if: ${{ !cancelled() }}
       env:
         TZ: Asia/Ho_Chi_Minh
       run: |
@@ -270,11 +268,7 @@ jobs:
         STATUS_COLOR="#0F9D58"
         STATUS_ICON="✅"
 
-        if [ "${{ job.status }}" = "cancelled" ]; then
-          STATUS="CANCELLED"
-          STATUS_COLOR="#F4B400"
-          STATUS_ICON="🟡"
-        elif [ "${{ job.status }}" != "success" ]; then
+        if [ "${{ job.status }}" != "success" ]; then
           STATUS="FAILED"
           STATUS_COLOR="#DB4437"
           STATUS_ICON="❌"
