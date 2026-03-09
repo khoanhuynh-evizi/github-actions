@@ -10,11 +10,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-
   check-repos-commit:
-  runs-on: ubuntu-latest
-  outputs:
-    should_run: ${{ steps.check.outputs.should_run }}
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
 
   steps:
     - name: Check latest commits in WDIO & Dashboard repos
@@ -72,7 +71,7 @@ jobs:
         echo "Final decision should_run=$SHOULD_RUN"
 
         echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
-        
+
   chrome-ubuntu:
     needs: check-repos-commit
     if: needs.check-repos-commit.outputs.should_run == 'true'
