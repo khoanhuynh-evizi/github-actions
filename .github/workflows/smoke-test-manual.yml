@@ -15,62 +15,62 @@ jobs:
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
 
-  steps:
-    - name: Check latest commits in WDIO & Dashboard repos
-      id: check
-      run: |
+    steps:
+      - name: Check latest commits in WDIO & Dashboard repos
+        id: check
+        run: |
 
-        WDIO_REPO="${{ secrets.WDIO_REPOS }}"
-        DASHBOARD_REPO="${{ secrets.DASHBOARD_REPO }}"
+          WDIO_REPO="${{ secrets.WDIO_REPOS }}"
+          DASHBOARD_REPO="${{ secrets.DASHBOARD_REPO }}"
 
-        WDIO_TOKEN="${{ secrets.WDIO_ACCESS_TOKEN }}"
-        DASHBOARD_TOKEN="${{ secrets.DASHBOARD_ACCESS_TOKEN }}"
+          WDIO_TOKEN="${{ secrets.WDIO_ACCESS_TOKEN }}"
+          DASHBOARD_TOKEN="${{ secrets.DASHBOARD_ACCESS_TOKEN }}"
 
-        NOW_TS=$(date +%s)
-        SHOULD_RUN=false
+          NOW_TS=$(date +%s)
+          SHOULD_RUN=false
 
-        check_repo () {
-          REPO=$1
-          BRANCH=$2
-          TOKEN=$3
+          check_repo () {
+            REPO=$1
+            BRANCH=$2
+            TOKEN=$3
+
+            echo "----------------------------------------"
+            echo "Checking repo: $REPO"
+            echo "Branch: $BRANCH"
+
+            COMMIT_JSON=$(curl -s \
+              -H "Authorization: token $TOKEN" \
+              https://api.github.com/repos/$REPO/commits/$BRANCH)
+
+            COMMIT_DATE=$(echo "$COMMIT_JSON" | jq -r '.commit.committer.date')
+            COMMIT_SHA=$(echo "$COMMIT_JSON" | jq -r '.sha')
+
+            echo "Latest commit SHA: $COMMIT_SHA"
+            echo "Latest commit date: $COMMIT_DATE"
+
+            COMMIT_TS=$(date -d "$COMMIT_DATE" +%s)
+            DIFF=$((NOW_TS - COMMIT_TS))
+
+            HOURS=$((DIFF / 3600))
+
+            echo "Seconds since last commit: $DIFF"
+            echo "Hours since last commit: $HOURS h"
+
+            if [ $DIFF -le 86400 ]; then
+              echo "Commit within 24h → TEST WILL RUN"
+              SHOULD_RUN=true
+            else
+              echo "No commit in last 24h"
+            fi
+          }
+
+          check_repo "$WDIO_REPO" "master" "$WDIO_TOKEN"
+          check_repo "$DASHBOARD_REPO" "develop" "$DASHBOARD_TOKEN"
 
           echo "----------------------------------------"
-          echo "Checking repo: $REPO"
-          echo "Branch: $BRANCH"
+          echo "Final decision should_run=$SHOULD_RUN"
 
-          COMMIT_JSON=$(curl -s \
-            -H "Authorization: token $TOKEN" \
-            https://api.github.com/repos/$REPO/commits/$BRANCH)
-
-          COMMIT_DATE=$(echo "$COMMIT_JSON" | jq -r '.commit.committer.date')
-          COMMIT_SHA=$(echo "$COMMIT_JSON" | jq -r '.sha')
-
-          echo "Latest commit SHA: $COMMIT_SHA"
-          echo "Latest commit date: $COMMIT_DATE"
-
-          COMMIT_TS=$(date -d "$COMMIT_DATE" +%s)
-          DIFF=$((NOW_TS - COMMIT_TS))
-
-          HOURS=$((DIFF / 3600))
-
-          echo "Seconds since last commit: $DIFF"
-          echo "Hours since last commit: $HOURS h"
-
-          if [ $DIFF -le 86400 ]; then
-            echo "Commit within 24h → TEST WILL RUN"
-            SHOULD_RUN=true
-          else
-            echo "No commit in last 24h"
-          fi
-        }
-
-        check_repo "$WDIO_REPO" "master" "$WDIO_TOKEN"
-        check_repo "$DASHBOARD_REPO" "develop" "$DASHBOARD_TOKEN"
-
-        echo "----------------------------------------"
-        echo "Final decision should_run=$SHOULD_RUN"
-
-        echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
+          echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
 
   chrome-ubuntu:
     needs: check-repos-commit
