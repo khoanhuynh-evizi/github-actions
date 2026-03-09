@@ -65,8 +65,8 @@ jobs:
             fi
           }
 
-          check_repo "$WDIO_REPO" "test-run-daily" "$WDIO_TOKEN"
-          check_repo "$DASHBOARD_REPO" "develop" "$DASHBOARD_TOKEN"
+          check_repo "$WDIO_REPO" "master" "$WDIO_TOKEN"
+          check_repo "$DASHBOARD_REPO" "test-run-daily" "$DASHBOARD_TOKEN"
 
           echo "----------------------------------------"
           echo "Final decision should_run=$SHOULD_RUN"
