@@ -10,7 +10,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+
+  check-repos-commit:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+
+    steps:
+      - name: Check latest commits in WDIO & Dashboard repos
+        id: check
+        run: |
+          WDIO_REPO="${{ secrets.WDIO_REPOS }}"
+          DASHBOARD_REPO="${{ secrets.DASHBOARD_REPO }}"
+
+          WDIO_TOKEN="${{ secrets.WDIO_ACCESS_TOKEN }}"
+          DASHBOARD_TOKEN="${{ secrets.DASHBOARD_ACCESS_TOKEN }}"
+
+          NOW_TS=$(date +%s)
+          SHOULD_RUN=false
+
+          check_repo () {
+            REPO=$1
+            TOKEN=$2
+
+            echo "Checking repo: $REPO"
+
+            COMMIT_DATE=$(curl -s \
+              -H "Authorization: token $TOKEN" \
+              https://api.github.com/repos/$REPO/commits/master \
+              | jq -r '.commit.committer.date')
+
+            echo "Latest commit: $COMMIT_DATE"
+
+            COMMIT_TS=$(date -d "$COMMIT_DATE" +%s)
+            DIFF=$((NOW_TS - COMMIT_TS))
+
+            echo "Seconds since last commit: $DIFF"
+
+            if [ $DIFF -le 86400 ]; then
+              SHOULD_RUN=true
+            fi
+          }
+
+          check_repo "$WDIO_REPO" "$WDIO_TOKEN"
+          check_repo "$DASHBOARD_REPO" "$DASHBOARD_TOKEN"
+
+          echo "should_run=$SHOULD_RUN"
+          echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
+
   chrome-ubuntu:
+    needs: check-repos-commit
+    if: needs.check-repos-commit.outputs.should_run == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -66,6 +116,7 @@ jobs:
         if grep -qE "[0-9]+\s+failed" specs-reporter.log; then
           exit 1
         fi
+
     - name: Upload spec reporter log
       if: always()
       uses: actions/upload-artifact@v4
@@ -84,7 +135,7 @@ jobs:
         ref: allure-history
         path: report-history
 
-    - name: Copy previous Allure history to reports (for trend graphs)
+    - name: Copy previous Allure history to reports
       if: always()
       run: |
         mkdir -p wdio/reports/history
@@ -166,7 +217,6 @@ jobs:
         LOG=specs-reporter.log
 
         if ! grep -q "Spec Files:" "$LOG"; then
-          echo "Spec summary not found!"
           echo "TOTAL=0" >> $GITHUB_ENV
           echo "PASSED=0" >> $GITHUB_ENV
           echo "FAILED=0" >> $GITHUB_ENV
