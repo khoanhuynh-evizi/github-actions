@@ -46,7 +46,8 @@ jobs:
             COMMIT_SHA=$(echo "$COMMIT_JSON" | jq -r '.sha')
 
             echo "Latest commit SHA: $COMMIT_SHA"
-            echo "Latest commit date: $COMMIT_DATE"
+            echo "Latest commit date (UTC): $COMMIT_DATE"
+            echo "Latest commit local time (UTC+7): $(TZ=Asia/Ho_Chi_Minh date -d "$COMMIT_DATE" '+%Y-%m-%d %H:%M:%S')"
 
             COMMIT_TS=$(date -d "$COMMIT_DATE" +%s)
             DIFF=$((NOW_TS - COMMIT_TS))
