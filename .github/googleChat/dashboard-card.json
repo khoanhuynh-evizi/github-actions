@@ -29,7 +29,7 @@
               },
               {
                 "textParagraph": {
-                  "text": "✅ <b>Passed:</b> ${PASSED} (${PASS_RATE}%)<br>❌ <b>Failed:</b> ${FAILED}<br>⏭️ <b>Skipped:</b> ${SKIPPED}<br>🔁 <b>Retries:</b> ${RETRIES}<br>📦 <b>Total:</b> ${TOTAL}<br>⏱️ <b>Duration:</b> ${DURATION}<br>🌿 <b>Branch:</b> <code>master</code><br><b>Status:</b> <font color=\"${STATUS_COLOR}\"><b>${STATUS}</b></font>"
+                  "text": "✅ <b>Passed:</b> ${PASSED} (${PASS_RATE}%)<br>❌ <b>Failed:</b> ${FAILED}<br>⏭️ <b>Skipped:</b> ${SKIPPED}<br>🔁 <b>Retries:</b> ${RETRIES}<br>📦 <b>Total:</b> ${TOTAL}<br>⏱️ <b>Duration:</b> ${DURATION}<br>🌿 <b>Branch Auto:</b> <code>master</code><br>🏷️ <b>Branch Code:</b> <code>fe-2785</code><br><b>Status:</b> <font color=\"${STATUS_COLOR}\"><b>${STATUS}</b></font>"
                 }
               }
             ]
