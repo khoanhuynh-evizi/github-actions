@@ -66,7 +66,7 @@ jobs:
           }
 
           check_repo "$WDIO_REPO" "ai-smart-review" "$WDIO_TOKEN"
-          check_repo "$DASHBOARD_REPO" "fe-2785" "$DASHBOARD_TOKEN"
+          check_repo "$DASHBOARD_REPO" "develop" "$DASHBOARD_TOKEN"
 
           echo "----------------------------------------"
           echo "Final decision should_run=$SHOULD_RUN"
@@ -75,7 +75,7 @@ jobs:
 
   chrome-ubuntu:
     needs: check-repos-commit
-    # if: needs.check-repos-commit.outputs.should_run == 'true'
+    if: needs.check-repos-commit.outputs.should_run == 'true'
     if: always()
     runs-on: ubuntu-latest
     env:
