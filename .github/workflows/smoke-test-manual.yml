@@ -75,7 +75,8 @@ jobs:
 
   chrome-ubuntu:
     needs: check-repos-commit
-    if: needs.check-repos-commit.outputs.should_run == 'true'
+    # if: needs.check-repos-commit.outputs.should_run == 'true'
+    if: always()
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Ho_Chi_Minh
