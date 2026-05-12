@@ -65,7 +65,7 @@ jobs:
             fi
           }
 
-          check_repo "$WDIO_REPO" "ai-smart-review" "$WDIO_TOKEN"
+          check_repo "$WDIO_REPO" "master" "$WDIO_TOKEN"
           check_repo "$DASHBOARD_REPO" "develop" "$DASHBOARD_TOKEN"
 
           echo "----------------------------------------"
@@ -75,8 +75,8 @@ jobs:
 
   chrome-ubuntu:
     needs: check-repos-commit
-    # if: needs.check-repos-commit.outputs.should_run == 'true'
-    if: always()
+    if: needs.check-repos-commit.outputs.should_run == 'true'
+    # if: always()
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Ho_Chi_Minh
