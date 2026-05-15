@@ -25,6 +25,11 @@ on:
         description: 'Branch dashboard'
         required: false
         default: 'develop'
+      forceRun:
+        description: 'Force run (skip commit check)'
+        required: false
+        default: 'false'
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}
@@ -86,8 +91,13 @@ jobs:
             fi
           }
 
-          check_repo "$WDIO_REPO" "${{ github.event.inputs.branchWdio || 'master' }}" "$WDIO_TOKEN"
-          check_repo "$DASHBOARD_REPO" "${{ github.event.inputs.branchDashboard || 'develop' }}" "$DASHBOARD_TOKEN"
+          if [ "${{ github.event.inputs.forceRun }}" = "true" ]; then
+            echo "forceRun=true → skipping commit check, TEST WILL RUN"
+            SHOULD_RUN=true
+          else
+            check_repo "$WDIO_REPO" "${{ github.event.inputs.branchWdio || 'master' }}" "$WDIO_TOKEN"
+            check_repo "$DASHBOARD_REPO" "${{ github.event.inputs.branchDashboard || 'develop' }}" "$DASHBOARD_TOKEN"
+          fi
 
           echo "----------------------------------------"
           echo "Final decision should_run=$SHOULD_RUN"
