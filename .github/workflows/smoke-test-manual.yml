@@ -241,7 +241,8 @@ jobs:
         echo '{
           "hosting": {
             "public": "deploy",
-            "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
+            "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+            "limit": 3
           }
         }' > firebase.json
 
