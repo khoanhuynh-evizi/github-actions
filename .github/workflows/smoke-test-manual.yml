@@ -25,6 +25,10 @@ on:
         description: 'Branch dashboard'
         required: false
         default: 'develop'
+      dashboardUrl:
+        description: 'Dashboard URL (Optional)'
+        required: false
+        default: ''
       forceRun:
         description: 'Force run (skip commit check)'
         required: false
@@ -160,7 +164,7 @@ jobs:
       env:
         CAPABILITIES: chrome
         MAX_INSTANCES: 2
-        R360_DASHBOARD_URL: ${{ secrets.R360_DASHBOARD_URL_S }}
+        R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_S }}
 
     - name: WDIO Test Checker
       if: always()
