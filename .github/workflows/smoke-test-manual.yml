@@ -211,8 +211,8 @@ jobs:
       run: |
         mkdir -p wdio/reports
         cat > wdio/reports/environment.properties << 'ENVEOF'
-        Branch Auto=${{ github.event.inputs.branchWdio || 'master' }}
-        Branch Code=${{ github.event.inputs.branchDashboard || 'develop' }}
+        branch_auto=${{ github.event.inputs.branchWdio || 'master' }}
+        branch_code=${{ github.event.inputs.branchDashboard || 'develop' }}
         ENVEOF
 
     - name: Generate Allure Report
@@ -633,6 +633,12 @@ jobs:
             })
 
             # D: Conditional formatting - Red for Fail, Green for Pass
+            # Add borders to create rounded button effect
+            border_style = {
+                "style": "SOLID",
+                "width": {"magnitude": 1, "unit": "PT"}
+            }
+
             # Format all cells first as red (default value is Fail)
             format_requests.append({
                 "repeatCell": {
@@ -641,10 +647,17 @@ jobs:
                         "userEnteredFormat": {
                             "backgroundColor": RED_BG,
                             "textFormat": {"bold": True, "foregroundColor": WHITE_TXT},
-                            "horizontalAlignment": "CENTER"
+                            "horizontalAlignment": "CENTER",
+                            "verticalAlignment": "MIDDLE",
+                            "borders": {
+                                "left": border_style,
+                                "right": border_style,
+                                "top": border_style,
+                                "bottom": border_style
+                            }
                         }
                     },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,borders)"
                 }
             })
 
@@ -660,7 +673,13 @@ jobs:
                             },
                             "format": {
                                 "backgroundColor": GREEN_BG,
-                                "textFormat": {"bold": True, "foregroundColor": WHITE_TXT}
+                                "textFormat": {"bold": True, "foregroundColor": WHITE_TXT},
+                                "borders": {
+                                    "left": border_style,
+                                    "right": border_style,
+                                    "top": border_style,
+                                    "bottom": border_style
+                                }
                             }
                         }
                     },
@@ -697,8 +716,8 @@ jobs:
         print(f"✅ Exported {total_failed} failed test case(s) to sheet '{sheet_name}'.")
         PYEOF
       env:
-        GSHEET_SERVICE_ACCOUNT: ${{ secrets.L_GSHEET_SERVICE_ACCOUNT }}
-        GSHEET_SPREADSHEET_ID:  ${{ secrets.L_GSHEET_SPREADSHEET_ID }}
+        GSHEET_SERVICE_ACCOUNT: ${{ secrets.GSHEET_SERVICE_ACCOUNT }}
+        GSHEET_SPREADSHEET_ID:  ${{ secrets.GSHEET_SPREADSHEET_ID }}
 
     - name: Notify Google Chat
       if: ${{ !cancelled() }}
