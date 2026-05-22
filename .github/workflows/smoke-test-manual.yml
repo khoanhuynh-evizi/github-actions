@@ -339,41 +339,28 @@ jobs:
         sheets  = service.spreadsheets()
 
         # ── Parse failed test cases from log ──────────────────────────────────
-        # The WDIO log contains lines like:
-        #   [chrome ...] ✖ LG-2: Login with valid credentials [@smoke]
-        #   [chrome ...] 1) Login LG-2: Login with valid credentials [@smoke]
-        #   [0-1] FAILED in chrome - file:///src/specs/login/login.lg-2.spec.ts
-        #
-        # Strategy: collect test case IDs+titles from "✖" lines and
-        # the numbered "1) Suite TC-ID: title" lines (last retry only).
-        # ─────────────────────────────────────────────────────────────────────
+        # Pattern A – "✖ TC-ID: title" lines (highest confidence)
+        # e.g. "[chrome ...] ✖ LG-2: Login with valid credentials [@smoke]"
+        cross_re = re.compile(r'[✖✗×]\s+([\w]+-\d+[^@\n]*)')
 
-        # Pattern A – "✖ TC-ID: title" lines (the inline failure marker)
-        # e.g. "   ✖ LG-2: Login with valid credentials [@smoke]"
-        cross_re = re.compile(
-            r'[✖✗×]\s+([\w]+-\d+[^@\n]*)',
-        )
+        # Pattern B – "1) Suite TC-ID: title" lines in error summary block
+        # e.g. "[chrome ...] 1) Login LG-2: Login with valid credentials [@smoke]"
+        numbered_re = re.compile(r'^\s*\d+\)\s+.*?([\w]+-\d+[^@\[\n]*)')
 
-        # Pattern B – "1) Suite TC-ID: title" lines in the error summary block
-        # e.g. "1) Login LG-2: Login with valid credentials [@smoke]"
-        numbered_re = re.compile(
-            r'^\s*\d+\)\s+.*?([\w]+-\d+[^@\[\n]*)',
-        )
-
-        # Pattern C – FAILED spec file line, extract filename as fallback
+        # Pattern C – FAILED spec file line (fallback only)
         # e.g. "[0-1] FAILED in chrome - file:///src/specs/login/login.lg-2.spec.ts"
         spec_failed_re = re.compile(
             r'FAILED in \w+ - (?:file://)?.*?/([^/\s]+\.spec\.ts)',
             re.IGNORECASE
         )
 
-        seen        = set()
+        seen         = set()
         failed_cases = []
 
         def add(label):
-            label = label.strip().rstrip('@').strip()
-            # Remove trailing tag like "[@smoke]"
-            label = re.sub(r'\s*\[@.*?\]\s*$', '', label).strip()
+            # Remove [@smoke] tags and anything after [
+            label = re.sub(r'\s*\[.*', '', label).strip()
+            label = label.rstrip(':').strip()
             if label and label not in seen:
                 seen.add(label)
                 failed_cases.append(label)
@@ -382,23 +369,23 @@ jobs:
             with open(LOG_PATH, encoding="utf-8", errors="replace") as fh:
                 lines = fh.readlines()
 
+            # Run Pattern A and B first
             for line in lines:
-                # Pattern A – cross mark lines (highest confidence)
                 m = cross_re.search(line)
                 if m:
                     add(m.group(1))
                     continue
-
-                # Pattern B – numbered error summary lines
                 m = numbered_re.search(line)
                 if m:
                     add(m.group(1))
                     continue
 
-                # Pattern C – FAILED spec file fallback
-                m = spec_failed_re.search(line)
-                if m:
-                    add(m.group(1))
+            # Pattern C — fallback only when A and B found nothing
+            if not failed_cases:
+                for line in lines:
+                    m = spec_failed_re.search(line)
+                    if m:
+                        add(m.group(1))
 
         if not failed_cases:
             print("No failed test cases found — skipping Google Sheets export.")
@@ -411,7 +398,7 @@ jobs:
         # ── Resolve target sheet name (MM/DD, or MM/DD-2, MM/DD-3 …) ─────────
         tz        = datetime.timezone(datetime.timedelta(hours=7))
         today     = datetime.datetime.now(tz)
-        base_name = today.strftime("%m/%d")   # e.g. "05/21"
+        base_name = today.strftime("%m/%d")   # e.g. "05/22"
 
         meta     = sheets.get(spreadsheetId=SPREADSHEET).execute()
         existing = {s["properties"]["title"] for s in meta["sheets"]}
@@ -440,7 +427,6 @@ jobs:
         print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
 
         # ── Write header row ──────────────────────────────────────────────────
-        # Columns: A=Test Case Name | B=Run | C=Type | D=Status | E=Note
         sheets.values().update(
             spreadsheetId=SPREADSHEET,
             range=f"'{sheet_name}'!A1:E1",
