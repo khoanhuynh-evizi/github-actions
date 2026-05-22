@@ -735,6 +735,7 @@ jobs:
         export STATUS STATUS_COLOR STATUS_ICON
         export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
         export REPORT_URL="https://record360-report.web.app"
+        export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.L_GSHEET_SPREADSHEET_ID }}/edit"
         export BRANCH_WDIO="${{ github.event.inputs.branchWdio || 'master' }}"
         export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || 'develop' }}"
 

@@ -20,12 +20,22 @@
                           "url": "${REPORT_URL}"
                         }
                       }
+                    },
+                    {
+                      "text": "📊 VIEW TEST RESULTS",
+                      "onClick": {
+                        "openLink": {
+                          "url": "${GSHEET_URL}"
+                        }
+                      }
                     }
                   ]
                 }
               },
               {
-                  "textParagraph": { "text": "📊 <b>Test Summary</b>" }
+                "textParagraph": {
+                  "text": "<b>Test Summary</b>"
+                }
               },
               {
                 "textParagraph": {
@@ -33,7 +43,7 @@
                 }
               }
             ]
-          }      
+          }
         ]
       }
     }
