@@ -206,6 +206,15 @@ jobs:
         cp -r report-history/allure-history/last-history/. wdio/reports/history 2>/dev/null || \
         cp -r report-history/last-history/. wdio/reports/history 2>/dev/null || true
 
+    - name: Create Allure environment.properties
+      if: ${{ !cancelled() }}
+      run: |
+        mkdir -p wdio/reports
+        cat > wdio/reports/environment.properties << 'ENVEOF'
+        branch_auto=${{ github.event.inputs.branchWdio || 'master' }}
+        branch_code=${{ github.event.inputs.branchDashboard || 'develop' }}
+        ENVEOF
+
     - name: Generate Allure Report
       if: ${{ !cancelled() }}
       run: npx --yes allure-commandline@2.37.0 generate wdio/reports --clean -o wdio/allure-report
@@ -308,6 +317,407 @@ jobs:
         echo "RETRIES=$RETRIES" >> $GITHUB_ENV
         echo "PASS_RATE=$PASS_RATE" >> $GITHUB_ENV
         echo "DURATION=$DURATION" >> $GITHUB_ENV
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # EXPORT FAILED TEST CASES TO GOOGLE SHEETS
+    # Requires secrets:
+    #   GSHEET_SERVICE_ACCOUNT  – JSON key of a Service Account
+    #   GSHEET_SPREADSHEET_ID   – ID from the Google Sheets URL
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: Export Failed Test Cases to Google Sheets
+      if: ${{ !cancelled() }}
+      run: |
+        pip install --quiet google-auth google-auth-httplib2 google-api-python-client
+
+        python3 << 'PYEOF'
+        import os, re, json, datetime
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+
+        # ── Config ────────────────────────────────────────────────────────────
+        SA_JSON     = os.environ["GSHEET_SERVICE_ACCOUNT"]
+        SPREADSHEET = os.environ["GSHEET_SPREADSHEET_ID"]
+        LOG_PATH    = "specs-reporter.log"
+        SCOPES      = ["https://www.googleapis.com/auth/spreadsheets"]
+
+        # ── Auth ──────────────────────────────────────────────────────────────
+        creds   = service_account.Credentials.from_service_account_info(
+                      json.loads(SA_JSON), scopes=SCOPES)
+        service = build("sheets", "v4", credentials=creds)
+        sheets  = service.spreadsheets()
+
+        # ── Parse failed test cases grouped by feature ────────────────────────
+        prefix_re  = re.compile(r'^\[.*?\]\s*')
+        spec_re    = re.compile(r'^»\s+\S+\.spec\.ts')
+        cross_re   = re.compile(r'[✖✗×]\s+([\w]+-\d+[^@\n]*)')
+        numbered_re = re.compile(r'^\s*\d+\)\s+.*?([\w]+-\d+[^@\[\n]*)')
+
+        def clean_label(raw):
+            label = re.sub(r'\s*\[.*', '', raw).strip().rstrip(':').strip()
+            return label
+
+        raw_lines = []
+        if os.path.exists(LOG_PATH):
+            with open(LOG_PATH, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    raw_lines.append(prefix_re.sub('', line).rstrip('\n'))
+
+        blocks = []
+        current = []
+        for line in raw_lines:
+            if spec_re.match(line.strip()):
+                if current:
+                    blocks.append(current)
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            blocks.append(current)
+
+        spec_last = {}
+        for block in blocks:
+            key = block[0].strip()
+            spec_last[key] = block
+
+        from collections import OrderedDict
+        feature_map = OrderedDict()
+
+        for spec_key, block in spec_last.items():
+            feature_name = None
+            failed_in_block = []
+            seen_tc = set()
+
+            lines = block[1:]
+
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if stripped.startswith(('[', '✖', '✗', '×', '-', '.')):
+                    continue
+                if re.match(r'^[\w]+-\d+', stripped):
+                    continue
+                if re.match(r'^\d+\)', stripped):
+                    continue
+                feature_name = stripped
+                break
+
+            if not feature_name:
+                m = re.search(r'/([^/]+)\.spec\.ts', spec_key)
+                feature_name = m.group(1).replace('-', ' ').replace('_', ' ').title() if m else "Unknown"
+
+            for line in lines:
+                m = cross_re.search(line)
+                if m:
+                    label = clean_label(m.group(1))
+                    if label and label not in seen_tc:
+                        seen_tc.add(label)
+                        failed_in_block.append(label)
+
+            if not failed_in_block:
+                for line in lines:
+                    m = numbered_re.search(line)
+                    if m:
+                        label = clean_label(m.group(1))
+                        if label and label not in seen_tc:
+                            seen_tc.add(label)
+                            failed_in_block.append(label)
+
+            if failed_in_block:
+                if feature_name not in feature_map:
+                    feature_map[feature_name] = []
+                for tc in failed_in_block:
+                    if tc not in feature_map[feature_name]:
+                        feature_map[feature_name].append(tc)
+
+        if not feature_map:
+            print("No failed test cases found — skipping Google Sheets export.")
+            raise SystemExit(0)
+
+        total_failed = sum(len(v) for v in feature_map.values())
+        print(f"Found {total_failed} failed test case(s) across {len(feature_map)} feature(s):")
+        for feat, tcs in feature_map.items():
+            print(f"  [{feat}]")
+            for tc in tcs:
+                print(f"    • {tc}")
+
+        # ── Resolve target sheet name ─────────────────────────────────────────
+        tz        = datetime.timezone(datetime.timedelta(hours=7))
+        today     = datetime.datetime.now(tz)
+        base_name = today.strftime("%m/%d")
+
+        meta     = sheets.get(spreadsheetId=SPREADSHEET).execute()
+        existing = {s["properties"]["title"] for s in meta["sheets"]}
+
+        sheet_name = base_name
+        idx = 2
+        while sheet_name in existing:
+            sheet_name = f"{base_name}-{idx}"
+            idx += 1
+
+        # ── Compute total rows needed ─────────────────────────────────────────
+        total_rows = 1 + sum(1 + len(tcs) for tcs in feature_map.values())
+        TOTAL_COLS = 26
+
+        # ── Create the new sheet ──────────────────────────────────────────────
+        add_req = {
+            "addSheet": {
+                "properties": {
+                    "title": sheet_name,
+                    "gridProperties": {
+                        "rowCount": max(200, total_rows + 10),
+                        "columnCount": TOTAL_COLS
+                    }
+                }
+            }
+        }
+        resp         = sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                                          body={"requests": [add_req]}).execute()
+        new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
+        print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
+
+        # ── Build rows to write ───────────────────────────────────────────────
+        EMPTY = [""] * (TOTAL_COLS - 5)
+
+        header_row  = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
+        all_rows    = [header_row]
+
+        feature_row_indices = []
+        tc_row_indices      = []
+
+        for feature_name, tcs in feature_map.items():
+            feat_row_idx = len(all_rows)
+            feature_row_indices.append(feat_row_idx)
+            all_rows.append([feature_name] + [""] * (TOTAL_COLS - 1))
+
+            for tc in tcs:
+                tc_row_idx = len(all_rows)
+                tc_row_indices.append(tc_row_idx)
+                all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
+
+        # ── Write all rows at once ────────────────────────────────────────────
+        sheets.values().update(
+            spreadsheetId=SPREADSHEET,
+            range=f"'{sheet_name}'!A1",
+            valueInputOption="RAW",
+            body={"values": all_rows}
+        ).execute()
+
+        # ── Formatting ────────────────────────────────────────────────────────
+        YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}
+        RED_BG    = {"red": 0.863, "green": 0.196,  "blue": 0.184}
+        GREEN_BG  = {"red": 0.145, "green": 0.639,  "blue": 0.251}  # Green for Pass
+        WHITE_TXT = {"red": 1,     "green": 1,      "blue": 1}
+        BLACK_TXT = {"red": 0,     "green": 0,      "blue": 0}
+        HEADER_BG = {"red": 0.2,   "green": 0.2,    "blue": 0.2}
+
+        def cell_range(sid, r1, c1, r2, c2):
+            return {"sheetId": sid,
+                    "startRowIndex": r1, "endRowIndex": r2,
+                    "startColumnIndex": c1, "endColumnIndex": c2}
+
+        format_requests = []
+
+        # 1. Header row style
+        format_requests.append({
+            "repeatCell": {
+                "range": cell_range(new_sheet_id, 0, 0, 1, TOTAL_COLS),
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": HEADER_BG,
+                        "textFormat": {"bold": True, "foregroundColor": WHITE_TXT, "fontSize": 10},
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE"
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
+            }
+        })
+
+        # 2. Feature header rows — yellow background, bold black text
+        for r in feature_row_indices:
+            format_requests.append({
+                "repeatCell": {
+                    "range": cell_range(new_sheet_id, r, 0, r + 1, TOTAL_COLS),
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": YELLOW_BG,
+                            "textFormat": {"bold": True, "foregroundColor": BLACK_TXT, "fontSize": 10},
+                            "horizontalAlignment": "LEFT",
+                            "verticalAlignment": "MIDDLE"
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+        # 3. TC rows — checkbox on B, dropdown on C & D, conditional color on D
+        if tc_row_indices:
+            first_tc = tc_row_indices[0]
+            last_tc  = tc_row_indices[-1] + 1
+
+            # B: checkbox validation
+            format_requests.append({
+                "setDataValidation": {
+                    "range": cell_range(new_sheet_id, first_tc, 1, last_tc, 2),
+                    "rule": {
+                        "condition": {"type": "BOOLEAN"},
+                        "showCustomUi": True,
+                        "strict": True
+                    }
+                }
+            })
+
+            # B: center-align
+            format_requests.append({
+                "repeatCell": {
+                    "range": cell_range(new_sheet_id, first_tc, 1, last_tc, 2),
+                    "cell": {
+                        "userEnteredFormat": {
+                            "horizontalAlignment": "CENTER",
+                            "verticalAlignment": "MIDDLE"
+                        }
+                    },
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+            # C: dropdown Type
+            format_requests.append({
+                "setDataValidation": {
+                    "range": cell_range(new_sheet_id, first_tc, 2, last_tc, 3),
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": "Existing"},
+                                {"userEnteredValue": "New Feature"}
+                            ]
+                        },
+                        "showCustomUi": True,
+                        "strict": True
+                    }
+                }
+            })
+
+            # C: center-align
+            format_requests.append({
+                "repeatCell": {
+                    "range": cell_range(new_sheet_id, first_tc, 2, last_tc, 3),
+                    "cell": {
+                        "userEnteredFormat": {
+                            "horizontalAlignment": "CENTER",
+                            "verticalAlignment": "MIDDLE"
+                        }
+                    },
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+            # D: dropdown Status
+            format_requests.append({
+                "setDataValidation": {
+                    "range": cell_range(new_sheet_id, first_tc, 3, last_tc, 4),
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": "Fail"},
+                                {"userEnteredValue": "Pass"}
+                            ]
+                        },
+                        "showCustomUi": True,
+                        "strict": True
+                    }
+                }
+            })
+
+            # D: Conditional formatting - Red for Fail, Green for Pass
+            # Add borders to create rounded button effect
+            border_style = {
+                "style": "SOLID",
+                "width": {"magnitude": 1, "unit": "PT"}
+            }
+
+            # Format all cells first as red (default value is Fail)
+            format_requests.append({
+                "repeatCell": {
+                    "range": cell_range(new_sheet_id, first_tc, 3, last_tc, 4),
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": RED_BG,
+                            "textFormat": {"bold": True, "foregroundColor": WHITE_TXT},
+                            "horizontalAlignment": "CENTER",
+                            "verticalAlignment": "MIDDLE",
+                            "borders": {
+                                "left": border_style,
+                                "right": border_style,
+                                "top": border_style,
+                                "bottom": border_style
+                            }
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,borders)"
+                }
+            })
+
+            # Add conditional formatting rule: if cell value = "Pass", use green
+            format_requests.append({
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [cell_range(new_sheet_id, first_tc, 3, last_tc, 4)],
+                        "booleanRule": {
+                            "condition": {
+                                "type": "TEXT_EQ",
+                                "values": [{"userEnteredValue": "Pass"}]
+                            },
+                            "format": {
+                                "backgroundColor": GREEN_BG,
+                                "textFormat": {"bold": True, "foregroundColor": WHITE_TXT},
+                                "borders": {
+                                    "left": border_style,
+                                    "right": border_style,
+                                    "top": border_style,
+                                    "bottom": border_style
+                                }
+                            }
+                        }
+                    },
+                    "index": 0
+                }
+            })
+
+        # 4. Auto-resize columns A-E
+        format_requests.append({
+            "autoResizeDimensions": {
+                "dimensions": {
+                    "sheetId": new_sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 0,
+                    "endIndex": 5
+                }
+            }
+        })
+
+        # 5. Freeze header row
+        format_requests.append({
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": new_sheet_id,
+                    "gridProperties": {"frozenRowCount": 1}
+                },
+                "fields": "gridProperties.frozenRowCount"
+            }
+        })
+
+        sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                           body={"requests": format_requests}).execute()
+
+        print(f"✅ Exported {total_failed} failed test case(s) to sheet '{sheet_name}'.")
+        PYEOF
+      env:
+        GSHEET_SERVICE_ACCOUNT: ${{ secrets.L_GSHEET_SERVICE_ACCOUNT }}
+        GSHEET_SPREADSHEET_ID:  ${{ secrets.L_GSHEET_SPREADSHEET_ID }}
 
     - name: Notify Google Chat
       if: ${{ !cancelled() }}
