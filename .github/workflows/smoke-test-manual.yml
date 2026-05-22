@@ -338,67 +338,140 @@ jobs:
         service = build("sheets", "v4", credentials=creds)
         sheets  = service.spreadsheets()
 
-        # ── Parse failed test cases from log ──────────────────────────────────
-        # Pattern A – "✖ TC-ID: title" lines (highest confidence)
-        # e.g. "[chrome ...] ✖ LG-2: Login with valid credentials [@smoke]"
-        cross_re = re.compile(r'[✖✗×]\s+([\w]+-\d+[^@\n]*)')
+        # ── Parse failed test cases grouped by feature ────────────────────────
+        #
+        # Log structure per spec file (only the LAST retry block is used):
+        #
+        #   » /src/specs/login/login.lg-2.spec.ts     ← new spec file marker
+        #   Login                                      ← feature/describe name
+        #      ✖ LG-2: Login with valid credentials [@smoke]
+        #
+        # Strategy:
+        #   1. Split log into per-spec blocks on the "» /src/specs/..." separator
+        #   2. For each block, take only the LAST occurrence (= last retry)
+        #   3. Extract feature name = first non-empty, non-bracket line after "»"
+        #   4. Extract failed TCs from "✖" lines in that block
+        # ─────────────────────────────────────────────────────────────────────
 
-        # Pattern B – "1) Suite TC-ID: title" lines in error summary block
-        # e.g. "[chrome ...] 1) Login LG-2: Login with valid credentials [@smoke]"
+        # Strip WDIO browser prefix:  "[chrome 148... #0-1] text" → "text"
+        prefix_re  = re.compile(r'^\[.*?\]\s*')
+
+        # "» /src/specs/..." spec file marker (after prefix stripped)
+        spec_re    = re.compile(r'^»\s+\S+\.spec\.ts')
+
+        # Cross-mark failed TC line
+        cross_re   = re.compile(r'[✖✗×]\s+([\w]+-\d+[^@\n]*)')
+
+        # Fallback Pattern B – numbered summary "1) Suite TC-ID: title"
         numbered_re = re.compile(r'^\s*\d+\)\s+.*?([\w]+-\d+[^@\[\n]*)')
 
-        # Pattern C – FAILED spec file line (fallback only)
-        # e.g. "[0-1] FAILED in chrome - file:///src/specs/login/login.lg-2.spec.ts"
-        spec_failed_re = re.compile(
-            r'FAILED in \w+ - (?:file://)?.*?/([^/\s]+\.spec\.ts)',
-            re.IGNORECASE
-        )
+        def clean_label(raw):
+            label = re.sub(r'\s*\[.*', '', raw).strip().rstrip(':').strip()
+            return label
 
-        seen         = set()
-        failed_cases = []
-
-        def add(label):
-            # Remove [@smoke] tags and anything after [
-            label = re.sub(r'\s*\[.*', '', label).strip()
-            label = label.rstrip(':').strip()
-            if label and label not in seen:
-                seen.add(label)
-                failed_cases.append(label)
-
+        # Read and strip prefixes
+        raw_lines = []
         if os.path.exists(LOG_PATH):
             with open(LOG_PATH, encoding="utf-8", errors="replace") as fh:
-                lines = fh.readlines()
+                for line in fh:
+                    raw_lines.append(prefix_re.sub('', line).rstrip('\n'))
 
-            # Run Pattern A and B first
+        # Split into spec blocks on "» ..." lines
+        # Each block: [spec_marker_line, ...rest]
+        blocks = []
+        current = []
+        for line in raw_lines:
+            if spec_re.match(line.strip()):
+                if current:
+                    blocks.append(current)
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            blocks.append(current)
+
+        # For each spec path, keep only the LAST block (= last retry)
+        spec_last = {}
+        for block in blocks:
+            key = block[0].strip()   # "» /src/specs/login/login.lg-2.spec.ts"
+            spec_last[key] = block
+
+        # Now extract feature + failed TCs from each last block
+        # Result: ordered list of (feature_name, [tc_label, ...])
+        from collections import OrderedDict
+        feature_map = OrderedDict()   # feature_name → [tc_labels]
+
+        for spec_key, block in spec_last.items():
+            feature_name = None
+            failed_in_block = []
+            seen_tc = set()
+
+            lines = block[1:]   # skip the "» ..." line itself
+
+            # Feature name = first non-empty line that is NOT a bracket line
+            # and does NOT look like a TC id, step log, or separator
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                # Skip lines starting with special chars or looking like log entries
+                if stripped.startswith(('[', '✖', '✗', '×', '-', '.')):
+                    continue
+                # Skip lines that look like TC ids or step logs
+                if re.match(r'^[\w]+-\d+', stripped):
+                    continue
+                if re.match(r'^\d+\)', stripped):
+                    continue
+                # This is the describe/suite name
+                feature_name = stripped
+                break
+
+            if not feature_name:
+                # fallback: derive from spec filename
+                m = re.search(r'/([^/]+)\.spec\.ts', spec_key)
+                feature_name = m.group(1).replace('-', ' ').replace('_', ' ').title() if m else "Unknown"
+
+            # Collect ✖ lines
             for line in lines:
                 m = cross_re.search(line)
                 if m:
-                    add(m.group(1))
-                    continue
-                m = numbered_re.search(line)
-                if m:
-                    add(m.group(1))
-                    continue
+                    label = clean_label(m.group(1))
+                    if label and label not in seen_tc:
+                        seen_tc.add(label)
+                        failed_in_block.append(label)
 
-            # Pattern C — fallback only when A and B found nothing
-            if not failed_cases:
+            # Fallback: numbered summary lines if no cross marks found
+            if not failed_in_block:
                 for line in lines:
-                    m = spec_failed_re.search(line)
+                    m = numbered_re.search(line)
                     if m:
-                        add(m.group(1))
+                        label = clean_label(m.group(1))
+                        if label and label not in seen_tc:
+                            seen_tc.add(label)
+                            failed_in_block.append(label)
 
-        if not failed_cases:
+            if failed_in_block:
+                if feature_name not in feature_map:
+                    feature_map[feature_name] = []
+                for tc in failed_in_block:
+                    if tc not in feature_map[feature_name]:
+                        feature_map[feature_name].append(tc)
+
+        if not feature_map:
             print("No failed test cases found — skipping Google Sheets export.")
             raise SystemExit(0)
 
-        print(f"Found {len(failed_cases)} failed test case(s):")
-        for tc in failed_cases:
-            print(f"  • {tc}")
+        total_failed = sum(len(v) for v in feature_map.values())
+        print(f"Found {total_failed} failed test case(s) across {len(feature_map)} feature(s):")
+        for feat, tcs in feature_map.items():
+            print(f"  [{feat}]")
+            for tc in tcs:
+                print(f"    • {tc}")
 
         # ── Resolve target sheet name (MM/DD, or MM/DD-2, MM/DD-3 …) ─────────
         tz        = datetime.timezone(datetime.timedelta(hours=7))
         today     = datetime.datetime.now(tz)
-        base_name = today.strftime("%m/%d")   # e.g. "05/22"
+        base_name = today.strftime("%m/%d")
 
         meta     = sheets.get(spreadsheetId=SPREADSHEET).execute()
         existing = {s["properties"]["title"] for s in meta["sheets"]}
@@ -409,14 +482,19 @@ jobs:
             sheet_name = f"{base_name}-{idx}"
             idx += 1
 
+        # ── Compute total rows needed ─────────────────────────────────────────
+        # 1 header row + per feature: 1 feature row + N tc rows
+        total_rows = 1 + sum(1 + len(tcs) for tcs in feature_map.values())
+        TOTAL_COLS = 26   # A-Z
+
         # ── Create the new sheet ──────────────────────────────────────────────
         add_req = {
             "addSheet": {
                 "properties": {
                     "title": sheet_name,
                     "gridProperties": {
-                        "rowCount": max(200, len(failed_cases) + 10),
-                        "columnCount": 5
+                        "rowCount": max(200, total_rows + 10),
+                        "columnCount": TOTAL_COLS
                     }
                 }
             }
@@ -426,100 +504,208 @@ jobs:
         new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
         print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
 
-        # ── Write header row ──────────────────────────────────────────────────
+        # ── Build rows to write ───────────────────────────────────────────────
+        # Row schema (26 cols):
+        #   A=TCs | B=Run | C=Type | D=Status | E=Note | F-Z=empty
+        EMPTY = [""] * (TOTAL_COLS - 5)
+
+        header_row  = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
+        all_rows    = [header_row]
+
+        # Track which row indices are feature headers (0-based, after header)
+        # and which are TC rows, for formatting
+        feature_row_indices = []   # 0-based sheet row index (0 = header)
+        tc_row_indices      = []   # 0-based sheet row index
+
+        for feature_name, tcs in feature_map.items():
+            # Feature header row (yellow, bold, spans A only, B-Z empty)
+            feat_row_idx = len(all_rows)          # 0-based
+            feature_row_indices.append(feat_row_idx)
+            all_rows.append([feature_name] + [""] * (TOTAL_COLS - 1))
+
+            for tc in tcs:
+                tc_row_idx = len(all_rows)
+                tc_row_indices.append(tc_row_idx)
+                all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
+
+        # ── Write all rows at once ────────────────────────────────────────────
         sheets.values().update(
             spreadsheetId=SPREADSHEET,
-            range=f"'{sheet_name}'!A1:E1",
+            range=f"'{sheet_name}'!A1",
             valueInputOption="RAW",
-            body={"values": [["Test Case Name", "Run", "Type", "Status", "Note"]]}
-        ).execute()
-
-        # ── Write failed test case rows ───────────────────────────────────────
-        rows = [[tc, True, "Automation", "Fail", ""] for tc in failed_cases]
-
-        sheets.values().update(
-            spreadsheetId=SPREADSHEET,
-            range=f"'{sheet_name}'!A2:E{1 + len(rows)}",
-            valueInputOption="RAW",
-            body={"values": rows}
+            body={"values": all_rows}
         ).execute()
 
         # ── Formatting ────────────────────────────────────────────────────────
-        RED_BG    = {"red": 0.863, "green": 0.196, "blue": 0.184}
-        WHITE_TXT = {"red": 1,     "green": 1,     "blue": 1}
-        HEADER_BG = {"red": 0.2,   "green": 0.2,   "blue": 0.2}
+        YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}    # #F2F200 (bright yellow)
+        RED_BG    = {"red": 0.863, "green": 0.196,  "blue": 0.184}  # #DC3220
+        WHITE_TXT = {"red": 1,     "green": 1,      "blue": 1}
+        BLACK_TXT = {"red": 0,     "green": 0,      "blue": 0}
+        HEADER_BG = {"red": 0.2,   "green": 0.2,    "blue": 0.2}
 
         def cell_range(sid, r1, c1, r2, c2):
             return {"sheetId": sid,
                     "startRowIndex": r1, "endRowIndex": r2,
                     "startColumnIndex": c1, "endColumnIndex": c2}
 
-        format_requests = [
-            # Bold header row
-            {
+        format_requests = []
+
+        # 1. Header row style
+        format_requests.append({
+            "repeatCell": {
+                "range": cell_range(new_sheet_id, 0, 0, 1, TOTAL_COLS),
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": HEADER_BG,
+                        "textFormat": {"bold": True, "foregroundColor": WHITE_TXT, "fontSize": 10},
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE"
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
+            }
+        })
+
+        # 2. Feature header rows — yellow background, bold black text
+        for r in feature_row_indices:
+            format_requests.append({
                 "repeatCell": {
-                    "range": cell_range(new_sheet_id, 0, 0, 1, 5),
+                    "range": cell_range(new_sheet_id, r, 0, r + 1, TOTAL_COLS),
                     "cell": {
                         "userEnteredFormat": {
-                            "backgroundColor": HEADER_BG,
-                            "textFormat": {
-                                "bold": True,
-                                "foregroundColor": WHITE_TXT,
-                                "fontSize": 10
-                            },
+                            "backgroundColor": YELLOW_BG,
+                            "textFormat": {"bold": True, "foregroundColor": BLACK_TXT, "fontSize": 10},
+                            "horizontalAlignment": "LEFT",
+                            "verticalAlignment": "MIDDLE"
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+        # 3. TC rows — checkbox on B, dropdown on C & D, red badge on D
+        if tc_row_indices:
+            first_tc = tc_row_indices[0]
+            last_tc  = tc_row_indices[-1] + 1   # exclusive
+
+            # B: checkbox validation
+            format_requests.append({
+                "setDataValidation": {
+                    "range": cell_range(new_sheet_id, first_tc, 1, last_tc, 2),
+                    "rule": {
+                        "condition": {"type": "BOOLEAN"},
+                        "showCustomUi": True,
+                        "strict": True
+                    }
+                }
+            })
+
+            # B: center-align
+            format_requests.append({
+                "repeatCell": {
+                    "range": cell_range(new_sheet_id, first_tc, 1, last_tc, 2),
+                    "cell": {
+                        "userEnteredFormat": {
                             "horizontalAlignment": "CENTER",
                             "verticalAlignment": "MIDDLE"
                         }
                     },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,"
-                              "horizontalAlignment,verticalAlignment)"
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
                 }
-            },
-            # Red "Fail" badge – column D (index 3)
-            {
+            })
+
+            # C: dropdown Type
+            format_requests.append({
+                "setDataValidation": {
+                    "range": cell_range(new_sheet_id, first_tc, 2, last_tc, 3),
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": "Existing"},
+                                {"userEnteredValue": "New Feature"}
+                            ]
+                        },
+                        "showCustomUi": True,
+                        "strict": True
+                    }
+                }
+            })
+
+            # C: center-align
+            format_requests.append({
                 "repeatCell": {
-                    "range": cell_range(new_sheet_id, 1, 3, 1 + len(rows), 4),
+                    "range": cell_range(new_sheet_id, first_tc, 2, last_tc, 3),
+                    "cell": {
+                        "userEnteredFormat": {
+                            "horizontalAlignment": "CENTER",
+                            "verticalAlignment": "MIDDLE"
+                        }
+                    },
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+            # D: dropdown Status
+            format_requests.append({
+                "setDataValidation": {
+                    "range": cell_range(new_sheet_id, first_tc, 3, last_tc, 4),
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": "Fail"},
+                                {"userEnteredValue": "Pass"}
+                            ]
+                        },
+                        "showCustomUi": True,
+                        "strict": True
+                    }
+                }
+            })
+
+            # D: red badge style
+            format_requests.append({
+                "repeatCell": {
+                    "range": cell_range(new_sheet_id, first_tc, 3, last_tc, 4),
                     "cell": {
                         "userEnteredFormat": {
                             "backgroundColor": RED_BG,
-                            "textFormat": {
-                                "bold": True,
-                                "foregroundColor": WHITE_TXT
-                            },
+                            "textFormat": {"bold": True, "foregroundColor": WHITE_TXT},
                             "horizontalAlignment": "CENTER"
                         }
                     },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,"
-                              "horizontalAlignment)"
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
                 }
-            },
-            # Auto-resize all columns
-            {
-                "autoResizeDimensions": {
-                    "dimensions": {
-                        "sheetId": new_sheet_id,
-                        "dimension": "COLUMNS",
-                        "startIndex": 0,
-                        "endIndex": 5
-                    }
-                }
-            },
-            # Freeze header row
-            {
-                "updateSheetProperties": {
-                    "properties": {
-                        "sheetId": new_sheet_id,
-                        "gridProperties": {"frozenRowCount": 1}
-                    },
-                    "fields": "gridProperties.frozenRowCount"
+            })
+
+        # 4. Auto-resize columns A-E
+        format_requests.append({
+            "autoResizeDimensions": {
+                "dimensions": {
+                    "sheetId": new_sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 0,
+                    "endIndex": 5
                 }
             }
-        ]
+        })
+
+        # 5. Freeze header row
+        format_requests.append({
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": new_sheet_id,
+                    "gridProperties": {"frozenRowCount": 1}
+                },
+                "fields": "gridProperties.frozenRowCount"
+            }
+        })
 
         sheets.batchUpdate(spreadsheetId=SPREADSHEET,
                            body={"requests": format_requests}).execute()
 
-        print(f"✅ Exported {len(rows)} failed test case(s) to sheet '{sheet_name}'.")
+        print(f"✅ Exported {total_failed} failed test case(s) to sheet '{sheet_name}'.")
         PYEOF
       env:
         GSHEET_SERVICE_ACCOUNT: ${{ secrets.L_GSHEET_SERVICE_ACCOUNT }}
