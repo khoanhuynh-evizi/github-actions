@@ -206,6 +206,15 @@ jobs:
         cp -r report-history/allure-history/last-history/. wdio/reports/history 2>/dev/null || \
         cp -r report-history/last-history/. wdio/reports/history 2>/dev/null || true
 
+    - name: Create Allure environment.properties
+      if: ${{ !cancelled() }}
+      run: |
+        mkdir -p wdio/reports
+        cat > wdio/reports/environment.properties << 'ENVEOF'
+        Branch Auto=${{ github.event.inputs.branchWdio || 'master' }}
+        Branch Code=${{ github.event.inputs.branchDashboard || 'develop' }}
+        ENVEOF
+
     - name: Generate Allure Report
       if: ${{ !cancelled() }}
       run: npx --yes allure-commandline@2.37.0 generate wdio/reports --clean -o wdio/allure-report
@@ -312,8 +321,7 @@ jobs:
     # ─────────────────────────────────────────────────────────────────────────
     # EXPORT FAILED TEST CASES TO GOOGLE SHEETS
     # Requires secrets:
-    #   GSHEET_SERVICE_ACCOUNT  – JSON key of a Service Account that has
-    #                             Editor access to the target spreadsheet
+    #   GSHEET_SERVICE_ACCOUNT  – JSON key of a Service Account
     #   GSHEET_SPREADSHEET_ID   – ID from the Google Sheets URL
     # ─────────────────────────────────────────────────────────────────────────
     - name: Export Failed Test Cases to Google Sheets
@@ -339,45 +347,21 @@ jobs:
         sheets  = service.spreadsheets()
 
         # ── Parse failed test cases grouped by feature ────────────────────────
-        #
-        # Log structure per spec file (only the LAST retry block is used):
-        #
-        #   » /src/specs/login/login.lg-2.spec.ts     ← new spec file marker
-        #   Login                                      ← feature/describe name
-        #      ✖ LG-2: Login with valid credentials [@smoke]
-        #
-        # Strategy:
-        #   1. Split log into per-spec blocks on the "» /src/specs/..." separator
-        #   2. For each block, take only the LAST occurrence (= last retry)
-        #   3. Extract feature name = first non-empty, non-bracket line after "»"
-        #   4. Extract failed TCs from "✖" lines in that block
-        # ─────────────────────────────────────────────────────────────────────
-
-        # Strip WDIO browser prefix:  "[chrome 148... #0-1] text" → "text"
         prefix_re  = re.compile(r'^\[.*?\]\s*')
-
-        # "» /src/specs/..." spec file marker (after prefix stripped)
         spec_re    = re.compile(r'^»\s+\S+\.spec\.ts')
-
-        # Cross-mark failed TC line
         cross_re   = re.compile(r'[✖✗×]\s+([\w]+-\d+[^@\n]*)')
-
-        # Fallback Pattern B – numbered summary "1) Suite TC-ID: title"
         numbered_re = re.compile(r'^\s*\d+\)\s+.*?([\w]+-\d+[^@\[\n]*)')
 
         def clean_label(raw):
             label = re.sub(r'\s*\[.*', '', raw).strip().rstrip(':').strip()
             return label
 
-        # Read and strip prefixes
         raw_lines = []
         if os.path.exists(LOG_PATH):
             with open(LOG_PATH, encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     raw_lines.append(prefix_re.sub('', line).rstrip('\n'))
 
-        # Split into spec blocks on "» ..." lines
-        # Each block: [spec_marker_line, ...rest]
         blocks = []
         current = []
         for line in raw_lines:
@@ -390,48 +374,38 @@ jobs:
         if current:
             blocks.append(current)
 
-        # For each spec path, keep only the LAST block (= last retry)
         spec_last = {}
         for block in blocks:
-            key = block[0].strip()   # "» /src/specs/login/login.lg-2.spec.ts"
+            key = block[0].strip()
             spec_last[key] = block
 
-        # Now extract feature + failed TCs from each last block
-        # Result: ordered list of (feature_name, [tc_label, ...])
         from collections import OrderedDict
-        feature_map = OrderedDict()   # feature_name → [tc_labels]
+        feature_map = OrderedDict()
 
         for spec_key, block in spec_last.items():
             feature_name = None
             failed_in_block = []
             seen_tc = set()
 
-            lines = block[1:]   # skip the "» ..." line itself
+            lines = block[1:]
 
-            # Feature name = first non-empty line that is NOT a bracket line
-            # and does NOT look like a TC id, step log, or separator
             for line in lines:
                 stripped = line.strip()
                 if not stripped:
                     continue
-                # Skip lines starting with special chars or looking like log entries
                 if stripped.startswith(('[', '✖', '✗', '×', '-', '.')):
                     continue
-                # Skip lines that look like TC ids or step logs
                 if re.match(r'^[\w]+-\d+', stripped):
                     continue
                 if re.match(r'^\d+\)', stripped):
                     continue
-                # This is the describe/suite name
                 feature_name = stripped
                 break
 
             if not feature_name:
-                # fallback: derive from spec filename
                 m = re.search(r'/([^/]+)\.spec\.ts', spec_key)
                 feature_name = m.group(1).replace('-', ' ').replace('_', ' ').title() if m else "Unknown"
 
-            # Collect ✖ lines
             for line in lines:
                 m = cross_re.search(line)
                 if m:
@@ -440,7 +414,6 @@ jobs:
                         seen_tc.add(label)
                         failed_in_block.append(label)
 
-            # Fallback: numbered summary lines if no cross marks found
             if not failed_in_block:
                 for line in lines:
                     m = numbered_re.search(line)
@@ -468,7 +441,7 @@ jobs:
             for tc in tcs:
                 print(f"    • {tc}")
 
-        # ── Resolve target sheet name (MM/DD, or MM/DD-2, MM/DD-3 …) ─────────
+        # ── Resolve target sheet name ─────────────────────────────────────────
         tz        = datetime.timezone(datetime.timedelta(hours=7))
         today     = datetime.datetime.now(tz)
         base_name = today.strftime("%m/%d")
@@ -483,9 +456,8 @@ jobs:
             idx += 1
 
         # ── Compute total rows needed ─────────────────────────────────────────
-        # 1 header row + per feature: 1 feature row + N tc rows
         total_rows = 1 + sum(1 + len(tcs) for tcs in feature_map.values())
-        TOTAL_COLS = 26   # A-Z
+        TOTAL_COLS = 26
 
         # ── Create the new sheet ──────────────────────────────────────────────
         add_req = {
@@ -505,21 +477,16 @@ jobs:
         print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
 
         # ── Build rows to write ───────────────────────────────────────────────
-        # Row schema (26 cols):
-        #   A=TCs | B=Run | C=Type | D=Status | E=Note | F-Z=empty
         EMPTY = [""] * (TOTAL_COLS - 5)
 
         header_row  = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
         all_rows    = [header_row]
 
-        # Track which row indices are feature headers (0-based, after header)
-        # and which are TC rows, for formatting
-        feature_row_indices = []   # 0-based sheet row index (0 = header)
-        tc_row_indices      = []   # 0-based sheet row index
+        feature_row_indices = []
+        tc_row_indices      = []
 
         for feature_name, tcs in feature_map.items():
-            # Feature header row (yellow, bold, spans A only, B-Z empty)
-            feat_row_idx = len(all_rows)          # 0-based
+            feat_row_idx = len(all_rows)
             feature_row_indices.append(feat_row_idx)
             all_rows.append([feature_name] + [""] * (TOTAL_COLS - 1))
 
@@ -537,8 +504,9 @@ jobs:
         ).execute()
 
         # ── Formatting ────────────────────────────────────────────────────────
-        YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}    # #F2F200 (bright yellow)
-        RED_BG    = {"red": 0.863, "green": 0.196,  "blue": 0.184}  # #DC3220
+        YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}
+        RED_BG    = {"red": 0.863, "green": 0.196,  "blue": 0.184}
+        GREEN_BG  = {"red": 0.145, "green": 0.639,  "blue": 0.251}  # Green for Pass
         WHITE_TXT = {"red": 1,     "green": 1,      "blue": 1}
         BLACK_TXT = {"red": 0,     "green": 0,      "blue": 0}
         HEADER_BG = {"red": 0.2,   "green": 0.2,    "blue": 0.2}
@@ -583,10 +551,10 @@ jobs:
                 }
             })
 
-        # 3. TC rows — checkbox on B, dropdown on C & D, red badge on D
+        # 3. TC rows — checkbox on B, dropdown on C & D, conditional color on D
         if tc_row_indices:
             first_tc = tc_row_indices[0]
-            last_tc  = tc_row_indices[-1] + 1   # exclusive
+            last_tc  = tc_row_indices[-1] + 1
 
             # B: checkbox validation
             format_requests.append({
@@ -664,7 +632,8 @@ jobs:
                 }
             })
 
-            # D: red badge style
+            # D: Conditional formatting - Red for Fail, Green for Pass
+            # Format all cells first as red (default value is Fail)
             format_requests.append({
                 "repeatCell": {
                     "range": cell_range(new_sheet_id, first_tc, 3, last_tc, 4),
@@ -676,6 +645,26 @@ jobs:
                         }
                     },
                     "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
+                }
+            })
+
+            # Add conditional formatting rule: if cell value = "Pass", use green
+            format_requests.append({
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [cell_range(new_sheet_id, first_tc, 3, last_tc, 4)],
+                        "booleanRule": {
+                            "condition": {
+                                "type": "TEXT_EQ",
+                                "values": [{"userEnteredValue": "Pass"}]
+                            },
+                            "format": {
+                                "backgroundColor": GREEN_BG,
+                                "textFormat": {"bold": True, "foregroundColor": WHITE_TXT}
+                            }
+                        }
+                    },
+                    "index": 0
                 }
             })
 
