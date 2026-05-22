@@ -309,7 +309,21 @@ jobs:
         echo "PASS_RATE=$PASS_RATE" >> $GITHUB_ENV
         echo "DURATION=$DURATION" >> $GITHUB_ENV
 
-    # ─────────────────────────────────────────────────────────────────────────
+    - name: Debug - Print raw failed lines from log
+      if: ${{ !cancelled() }}
+      run: |
+        echo "=== Lines containing 'fail' (case-insensitive) ==="
+        grep -in "fail" specs-reporter.log || echo "(none found)"
+        
+        echo ""
+        echo "=== Lines containing 'passing' or 'pending' ==="
+        grep -in "passing\|pending\|failing" specs-reporter.log || echo "(none found)"
+        
+        echo ""
+        echo "=== Full log (last 100 lines) ==="
+        tail -100 specs-reporter.log
+    
+        # ─────────────────────────────────────────────────────────────────────────
     # EXPORT FAILED TEST CASES TO GOOGLE SHEETS
     # Requires secrets:
     #   GSHEET_SERVICE_ACCOUNT  – JSON key of a Service Account that has
