@@ -493,6 +493,7 @@ jobs:
         YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}
         RED_BG    = {"red": 0.863, "green": 0.196,  "blue": 0.184}
         GREEN_BG  = {"red": 0.118, "green": 0.588,  "blue": 0.235}
+        GRAY_BG   = {"red": 0.851, "green": 0.851,  "blue": 0.851}  # #D9D9D9 – Type chip
         WHITE     = {"red": 1.0,   "green": 1.0,    "blue": 1.0}
         BLACK     = {"red": 0.0,   "green": 0.0,    "blue": 0.0}
 
@@ -546,15 +547,17 @@ jobs:
                 }
             })
 
-            # 1d. Column C (Type): center-align
+            # 1d. Column C (Type): gray background + dark text + center-align (chip style)
             fmt_requests.append({
                 "repeatCell": {
                     "range": cr(first_tc, 2, last_tc, 3),
                     "cell": {"userEnteredFormat": {
+                        "backgroundColor": GRAY_BG,
+                        "textFormat": {"bold": True, "foregroundColor": BLACK},
                         "horizontalAlignment": "CENTER",
                         "verticalAlignment": "MIDDLE"
                     }},
-                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
                 }
             })
 
