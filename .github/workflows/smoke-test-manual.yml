@@ -547,31 +547,28 @@ jobs:
                 }
             })
 
-            # 1d. Column C (Type): gray background + dark text + center-align (chip style)
+            # 1d. Column C (Type): center-align only — background set via conditional format
+            #     so Google Sheets renders the native chip/rounded style
             fmt_requests.append({
                 "repeatCell": {
                     "range": cr(first_tc, 2, last_tc, 3),
                     "cell": {"userEnteredFormat": {
-                        "backgroundColor": GRAY_BG,
-                        "textFormat": {"bold": True, "foregroundColor": BLACK},
                         "horizontalAlignment": "CENTER",
                         "verticalAlignment": "MIDDLE"
                     }},
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
                 }
             })
 
-            # 1e. Column D (Status): red background for "Fail" (default), centered, bold white
+            # 1e. Column D (Status): center-align only — background set via conditional format
             fmt_requests.append({
                 "repeatCell": {
                     "range": cr(first_tc, 3, last_tc, 4),
                     "cell": {"userEnteredFormat": {
-                        "backgroundColor": RED_BG,
-                        "textFormat": {"bold": True, "foregroundColor": WHITE},
                         "horizontalAlignment": "CENTER",
                         "verticalAlignment": "MIDDLE"
                     }},
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
                 }
             })
 
@@ -638,13 +635,72 @@ jobs:
             print("✅ Data validation applied.")
 
         # ─────────────────────────────────────────────────────────────────────
-        # STEP 3 — Conditional formatting: green background when Status = "Pass"
+        # STEP 3 — Conditional formatting for all dropdown values
+        #          This is what triggers Google Sheets native chip/rounded style
         # ─────────────────────────────────────────────────────────────────────
         if tc_row_indices:
             first_tc = tc_row_indices[0]
             last_tc  = tc_row_indices[-1] + 1
 
             cond_requests = [
+                # Column C — Type: "Existing" → gray chip
+                {
+                    "addConditionalFormatRule": {
+                        "rule": {
+                            "ranges": [cr(first_tc, 2, last_tc, 3)],
+                            "booleanRule": {
+                                "condition": {
+                                    "type": "TEXT_EQ",
+                                    "values": [{"userEnteredValue": "Existing"}]
+                                },
+                                "format": {
+                                    "backgroundColor": GRAY_BG,
+                                    "textFormat": {"bold": True, "foregroundColor": BLACK}
+                                }
+                            }
+                        },
+                        "index": 0
+                    }
+                },
+                # Column C — Type: "New Feature" → blue chip
+                {
+                    "addConditionalFormatRule": {
+                        "rule": {
+                            "ranges": [cr(first_tc, 2, last_tc, 3)],
+                            "booleanRule": {
+                                "condition": {
+                                    "type": "TEXT_EQ",
+                                    "values": [{"userEnteredValue": "New Feature"}]
+                                },
+                                "format": {
+                                    "backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957},
+                                    "textFormat": {"bold": True, "foregroundColor": BLACK}
+                                }
+                            }
+                        },
+                        "index": 1
+                    }
+                },
+                # Column D — Status: "Fail" → red chip
+                {
+                    "addConditionalFormatRule": {
+                        "rule": {
+                            "ranges": [cr(first_tc, 3, last_tc, 4)],
+                            "booleanRule": {
+                                "condition": {
+                                    "type": "TEXT_EQ",
+                                    "values": [{"userEnteredValue": "Fail"}]
+                                },
+                                "format": {
+                                    "backgroundColor": RED_BG,
+                                    "textFormat": {"bold": True, "foregroundColor": WHITE}
+                                }
+                            }
+                        },
+                        "index": 2
+                    }
+                },
+                # Column D — Status: "Pass" → green chip
                 {
                     "addConditionalFormatRule": {
                         "rule": {
@@ -660,7 +716,7 @@ jobs:
                                 }
                             }
                         },
-                        "index": 0
+                        "index": 3
                     }
                 }
             ]
