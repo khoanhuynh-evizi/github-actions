@@ -595,7 +595,7 @@ jobs:
                         }
                     }
                 },
-                # C: dropdown Existing / New Feature — CHIP style = rounded pill
+                # C: dropdown Existing / New Feature
                 {
                     "setDataValidation": {
                         "range": cr(first_tc, 2, last_tc, 3),
@@ -608,8 +608,7 @@ jobs:
                                 ]
                             },
                             "showCustomUi": True,
-                            "strict": True,
-                            "style": "CHIP"
+                            "strict": True
                         }
                     }
                 },
@@ -626,8 +625,7 @@ jobs:
                                 ]
                             },
                             "showCustomUi": True,
-                            "strict": True,
-                            "style": "CHIP"
+                            "strict": True
                         }
                     }
                 }
