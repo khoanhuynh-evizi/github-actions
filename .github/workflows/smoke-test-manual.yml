@@ -105,8 +105,8 @@ jobs:
             echo "forceRun=true → skipping commit check, TEST WILL RUN"
             echo "true" > "$SHOULD_RUN_FILE"
           else
-            check_repo "$WDIO_REPO" "${{ github.event.inputs.branchWdio || 'master' }}" "$WDIO_TOKEN"
-            check_repo "$DASHBOARD_REPO" "${{ github.event.inputs.branchDashboard || 'develop' }}" "$DASHBOARD_TOKEN"
+            check_repo "$WDIO_REPO" "${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}" "$WDIO_TOKEN"
+            check_repo "$DASHBOARD_REPO" "${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}" "$DASHBOARD_TOKEN"
           fi
 
           SHOULD_RUN=$(cat "$SHOULD_RUN_FILE")
@@ -133,7 +133,7 @@ jobs:
       with:
         repository: ${{ secrets.WDIO_REPOS }}
         token: ${{ secrets.WDIO_ACCESS_TOKEN }}
-        ref: ${{ github.event.inputs.branchWdio || 'master' }}
+        ref: ${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}
         path: wdio
 
     - name: Free disk space
@@ -144,7 +144,7 @@ jobs:
         sudo rm -rf /opt/ghc
         sudo rm -rf "$AGENT_TOOLSDIRECTORY"
         sudo apt-get clean
-        df -h    
+        df -h
 
     - name: Use Node.js 20.x
       uses: actions/setup-node@v4
@@ -172,7 +172,7 @@ jobs:
       env:
         CAPABILITIES: chrome
         MAX_INSTANCES: 2
-        R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_S }}
+        R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
 
     - name: WDIO Test Checker
       if: always()
@@ -320,9 +320,6 @@ jobs:
 
     # ─────────────────────────────────────────────────────────────────────────
     # EXPORT FAILED TEST CASES TO GOOGLE SHEETS
-    # Requires secrets:
-    #   GSHEET_SERVICE_ACCOUNT  – JSON key of a Service Account
-    #   GSHEET_SPREADSHEET_ID   – ID from the Google Sheets URL
     # ─────────────────────────────────────────────────────────────────────────
     - name: Export Failed Test Cases to Google Sheets
       if: ${{ !cancelled() }}
@@ -347,9 +344,9 @@ jobs:
         sheets  = service.spreadsheets()
 
         # ── Parse failed test cases grouped by feature ────────────────────────
-        prefix_re  = re.compile(r'^\[.*?\]\s*')
-        spec_re    = re.compile(r'^»\s+\S+\.spec\.ts')
-        cross_re   = re.compile(r'[✖✗×]\s+([\w]+-\d+[^@\n]*)')
+        prefix_re   = re.compile(r'^\[.*?\]\s*')
+        spec_re     = re.compile(r'^»\s+\S+\.spec\.ts')
+        cross_re    = re.compile(r'[✖✗×]\s+([\w]+-\d+[^@\n]*)')
         numbered_re = re.compile(r'^\s*\d+\)\s+.*?([\w]+-\d+[^@\[\n]*)')
 
         def clean_label(raw):
@@ -362,8 +359,7 @@ jobs:
                 for line in fh:
                     raw_lines.append(prefix_re.sub('', line).rstrip('\n'))
 
-        blocks = []
-        current = []
+        blocks, current = [], []
         for line in raw_lines:
             if spec_re.match(line.strip()):
                 if current:
@@ -374,20 +370,19 @@ jobs:
         if current:
             blocks.append(current)
 
+        # Keep only the last retry block per spec file
         spec_last = {}
         for block in blocks:
-            key = block[0].strip()
-            spec_last[key] = block
+            spec_last[block[0].strip()] = block
 
         from collections import OrderedDict
         feature_map = OrderedDict()
 
         for spec_key, block in spec_last.items():
-            feature_name = None
+            feature_name    = None
             failed_in_block = []
-            seen_tc = set()
-
-            lines = block[1:]
+            seen_tc         = set()
+            lines           = block[1:]
 
             for line in lines:
                 stripped = line.strip()
@@ -395,9 +390,7 @@ jobs:
                     continue
                 if stripped.startswith(('[', '✖', '✗', '×', '-', '.')):
                     continue
-                if re.match(r'^[\w]+-\d+', stripped):
-                    continue
-                if re.match(r'^\d+\)', stripped):
+                if re.match(r'^[\w]+-\d+', stripped) or re.match(r'^\d+\)', stripped):
                     continue
                 feature_name = stripped
                 break
@@ -441,7 +434,7 @@ jobs:
             for tc in tcs:
                 print(f"    • {tc}")
 
-        # ── Resolve target sheet name ─────────────────────────────────────────
+        # ── Resolve target sheet name (MM/DD or MM/DD-2, MM/DD-3 …) ──────────
         tz        = datetime.timezone(datetime.timedelta(hours=7))
         today     = datetime.datetime.now(tz)
         base_name = today.strftime("%m/%d")
@@ -455,265 +448,321 @@ jobs:
             sheet_name = f"{base_name}-{idx}"
             idx += 1
 
-        # ── Compute total rows needed ─────────────────────────────────────────
-        total_rows = 1 + sum(1 + len(tcs) for tcs in feature_map.values())
+        # ── Build row data ────────────────────────────────────────────────────
+        # Columns: A=TCs | B=Run | C=Type | D=Status | E=Note | F-Z=empty
         TOTAL_COLS = 26
+        EMPTY      = [""] * (TOTAL_COLS - 5)
+
+        header_row          = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
+        all_rows            = [header_row]
+        feature_row_indices = []   # 0-based row indices for feature header rows
+        tc_row_indices      = []   # 0-based row indices for TC data rows
+
+        for feat_name, tcs in feature_map.items():
+            feature_row_indices.append(len(all_rows))
+            all_rows.append([feat_name] + [""] * (TOTAL_COLS - 1))
+            for tc in tcs:
+                tc_row_indices.append(len(all_rows))
+                # B=True (boolean) → becomes checked checkbox after validation applied
+                all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
+
+        total_rows = len(all_rows)
 
         # ── Create the new sheet ──────────────────────────────────────────────
-        add_req = {
-            "addSheet": {
-                "properties": {
-                    "title": sheet_name,
-                    "gridProperties": {
-                        "rowCount": max(200, total_rows + 10),
-                        "columnCount": TOTAL_COLS
-                    }
+        resp = sheets.batchUpdate(
+            spreadsheetId=SPREADSHEET,
+            body={"requests": [{"addSheet": {"properties": {
+                "title": sheet_name,
+                "gridProperties": {
+                    "rowCount": max(200, total_rows + 10),
+                    "columnCount": TOTAL_COLS
                 }
-            }
-        }
-        resp         = sheets.batchUpdate(spreadsheetId=SPREADSHEET,
-                                          body={"requests": [add_req]}).execute()
+            }}}]}
+        ).execute()
         new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
         print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
 
-        # ── Build rows to write ───────────────────────────────────────────────
-        EMPTY = [""] * (TOTAL_COLS - 5)
+        # ── Helper ────────────────────────────────────────────────────────────
+        def cr(r1, c1, r2, c2):
+            return {"sheetId": new_sheet_id,
+                    "startRowIndex": r1, "endRowIndex": r2,
+                    "startColumnIndex": c1, "endColumnIndex": c2}
 
-        header_row  = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
-        all_rows    = [header_row]
+        # ── Colors ────────────────────────────────────────────────────────────
+        DARK_BG   = {"red": 0.2,   "green": 0.2,   "blue": 0.2}
+        YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}
+        RED_BG    = {"red": 0.863, "green": 0.196,  "blue": 0.184}
+        GREEN_BG  = {"red": 0.118, "green": 0.588,  "blue": 0.235}
+        GRAY_BG   = {"red": 0.851, "green": 0.851,  "blue": 0.851}  # #D9D9D9 – Type chip
+        WHITE     = {"red": 1.0,   "green": 1.0,    "blue": 1.0}
+        BLACK     = {"red": 0.0,   "green": 0.0,    "blue": 0.0}
 
-        feature_row_indices = []
-        tc_row_indices      = []
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 1 — Apply all cell formatting (repeatCell) in one batchUpdate
+        # ─────────────────────────────────────────────────────────────────────
+        fmt_requests = []
 
-        for feature_name, tcs in feature_map.items():
-            feat_row_idx = len(all_rows)
-            feature_row_indices.append(feat_row_idx)
-            all_rows.append([feature_name] + [""] * (TOTAL_COLS - 1))
+        # 1a. Header row: dark background, white bold text, centered
+        fmt_requests.append({
+            "repeatCell": {
+                "range": cr(0, 0, 1, TOTAL_COLS),
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": DARK_BG,
+                    "textFormat": {"bold": True, "foregroundColor": WHITE, "fontSize": 10},
+                    "horizontalAlignment": "CENTER",
+                    "verticalAlignment": "MIDDLE"
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
+            }
+        })
 
-            for tc in tcs:
-                tc_row_idx = len(all_rows)
-                tc_row_indices.append(tc_row_idx)
-                all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
+        # 1b. Feature header rows: yellow background, bold black text, left-aligned
+        for r in feature_row_indices:
+            fmt_requests.append({
+                "repeatCell": {
+                    "range": cr(r, 0, r + 1, TOTAL_COLS),
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": YELLOW_BG,
+                        "textFormat": {"bold": True, "foregroundColor": BLACK, "fontSize": 10},
+                        "horizontalAlignment": "LEFT",
+                        "verticalAlignment": "MIDDLE"
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
+                }
+            })
 
-        # ── Write all rows at once ────────────────────────────────────────────
+        if tc_row_indices:
+            first_tc = tc_row_indices[0]
+            last_tc  = tc_row_indices[-1] + 1
+
+            # 1c. Column B (Run): center-align for checkbox display
+            fmt_requests.append({
+                "repeatCell": {
+                    "range": cr(first_tc, 1, last_tc, 2),
+                    "cell": {"userEnteredFormat": {
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE"
+                    }},
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+            # 1d. Column C (Type): center-align only — background set via conditional format
+            #     so Google Sheets renders the native chip/rounded style
+            fmt_requests.append({
+                "repeatCell": {
+                    "range": cr(first_tc, 2, last_tc, 3),
+                    "cell": {"userEnteredFormat": {
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE"
+                    }},
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+            # 1e. Column D (Status): center-align only — background set via conditional format
+            fmt_requests.append({
+                "repeatCell": {
+                    "range": cr(first_tc, 3, last_tc, 4),
+                    "cell": {"userEnteredFormat": {
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE"
+                    }},
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+        sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                           body={"requests": fmt_requests}).execute()
+        print("✅ Cell formatting applied.")
+
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 2 — Apply data validation (checkbox + dropdowns) separately
+        # ─────────────────────────────────────────────────────────────────────
+        if tc_row_indices:
+            first_tc = tc_row_indices[0]
+            last_tc  = tc_row_indices[-1] + 1
+
+            val_requests = [
+                # B: BOOLEAN → renders as checkbox (showCustomUi:true)
+                {
+                    "setDataValidation": {
+                        "range": cr(first_tc, 1, last_tc, 2),
+                        "rule": {
+                            "condition": {"type": "BOOLEAN"},
+                            "showCustomUi": True,
+                            "strict": True
+                        }
+                    }
+                },
+                # C: dropdown Existing / New Feature
+                {
+                    "setDataValidation": {
+                        "range": cr(first_tc, 2, last_tc, 3),
+                        "rule": {
+                            "condition": {
+                                "type": "ONE_OF_LIST",
+                                "values": [
+                                    {"userEnteredValue": "Existing"},
+                                    {"userEnteredValue": "New Feature"}
+                                ]
+                            },
+                            "showCustomUi": True,
+                            "strict": True
+                        }
+                    }
+                },
+                # D: dropdown Fail / Pass — CHIP style = rounded pill
+                {
+                    "setDataValidation": {
+                        "range": cr(first_tc, 3, last_tc, 4),
+                        "rule": {
+                            "condition": {
+                                "type": "ONE_OF_LIST",
+                                "values": [
+                                    {"userEnteredValue": "Fail"},
+                                    {"userEnteredValue": "Pass"}
+                                ]
+                            },
+                            "showCustomUi": True,
+                            "strict": True
+                        }
+                    }
+                }
+            ]
+            sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                               body={"requests": val_requests}).execute()
+            print("✅ Data validation applied.")
+
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 3 — Conditional formatting for all dropdown values
+        #          This is what triggers Google Sheets native chip/rounded style
+        # ─────────────────────────────────────────────────────────────────────
+        if tc_row_indices:
+            first_tc = tc_row_indices[0]
+            last_tc  = tc_row_indices[-1] + 1
+
+            cond_requests = [
+                # Column C — Type: "Existing" → gray chip
+                {
+                    "addConditionalFormatRule": {
+                        "rule": {
+                            "ranges": [cr(first_tc, 2, last_tc, 3)],
+                            "booleanRule": {
+                                "condition": {
+                                    "type": "TEXT_EQ",
+                                    "values": [{"userEnteredValue": "Existing"}]
+                                },
+                                "format": {
+                                    "backgroundColor": GRAY_BG,
+                                    "textFormat": {"bold": True, "foregroundColor": BLACK}
+                                }
+                            }
+                        },
+                        "index": 0
+                    }
+                },
+                # Column C — Type: "New Feature" → blue chip
+                {
+                    "addConditionalFormatRule": {
+                        "rule": {
+                            "ranges": [cr(first_tc, 2, last_tc, 3)],
+                            "booleanRule": {
+                                "condition": {
+                                    "type": "TEXT_EQ",
+                                    "values": [{"userEnteredValue": "New Feature"}]
+                                },
+                                "format": {
+                                    "backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957},
+                                    "textFormat": {"bold": True, "foregroundColor": BLACK}
+                                }
+                            }
+                        },
+                        "index": 1
+                    }
+                },
+                # Column D — Status: "Fail" → red chip
+                {
+                    "addConditionalFormatRule": {
+                        "rule": {
+                            "ranges": [cr(first_tc, 3, last_tc, 4)],
+                            "booleanRule": {
+                                "condition": {
+                                    "type": "TEXT_EQ",
+                                    "values": [{"userEnteredValue": "Fail"}]
+                                },
+                                "format": {
+                                    "backgroundColor": RED_BG,
+                                    "textFormat": {"bold": True, "foregroundColor": WHITE}
+                                }
+                            }
+                        },
+                        "index": 2
+                    }
+                },
+                # Column D — Status: "Pass" → green chip
+                {
+                    "addConditionalFormatRule": {
+                        "rule": {
+                            "ranges": [cr(first_tc, 3, last_tc, 4)],
+                            "booleanRule": {
+                                "condition": {
+                                    "type": "TEXT_EQ",
+                                    "values": [{"userEnteredValue": "Pass"}]
+                                },
+                                "format": {
+                                    "backgroundColor": GREEN_BG,
+                                    "textFormat": {"bold": True, "foregroundColor": WHITE}
+                                }
+                            }
+                        },
+                        "index": 3
+                    }
+                }
+            ]
+            sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                               body={"requests": cond_requests}).execute()
+            print("✅ Conditional formatting applied.")
+
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 4 — Write all row data
+        # Writing AFTER validation so boolean True renders as checked checkbox
+        # ─────────────────────────────────────────────────────────────────────
         sheets.values().update(
             spreadsheetId=SPREADSHEET,
             range=f"'{sheet_name}'!A1",
             valueInputOption="RAW",
             body={"values": all_rows}
         ).execute()
+        print("✅ Data written.")
 
-        # ── Formatting ────────────────────────────────────────────────────────
-        YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}
-        RED_BG    = {"red": 0.863, "green": 0.196,  "blue": 0.184}
-        GREEN_BG  = {"red": 0.145, "green": 0.639,  "blue": 0.251}  # Green for Pass
-        WHITE_TXT = {"red": 1,     "green": 1,      "blue": 1}
-        BLACK_TXT = {"red": 0,     "green": 0,      "blue": 0}
-        HEADER_BG = {"red": 0.2,   "green": 0.2,    "blue": 0.2}
-
-        def cell_range(sid, r1, c1, r2, c2):
-            return {"sheetId": sid,
-                    "startRowIndex": r1, "endRowIndex": r2,
-                    "startColumnIndex": c1, "endColumnIndex": c2}
-
-        format_requests = []
-
-        # 1. Header row style
-        format_requests.append({
-            "repeatCell": {
-                "range": cell_range(new_sheet_id, 0, 0, 1, TOTAL_COLS),
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": HEADER_BG,
-                        "textFormat": {"bold": True, "foregroundColor": WHITE_TXT, "fontSize": 10},
-                        "horizontalAlignment": "CENTER",
-                        "verticalAlignment": "MIDDLE"
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
-            }
-        })
-
-        # 2. Feature header rows — yellow background, bold black text
-        for r in feature_row_indices:
-            format_requests.append({
-                "repeatCell": {
-                    "range": cell_range(new_sheet_id, r, 0, r + 1, TOTAL_COLS),
-                    "cell": {
-                        "userEnteredFormat": {
-                            "backgroundColor": YELLOW_BG,
-                            "textFormat": {"bold": True, "foregroundColor": BLACK_TXT, "fontSize": 10},
-                            "horizontalAlignment": "LEFT",
-                            "verticalAlignment": "MIDDLE"
-                        }
-                    },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
-                }
-            })
-
-        # 3. TC rows — checkbox on B, dropdown on C & D, conditional color on D
-        if tc_row_indices:
-            first_tc = tc_row_indices[0]
-            last_tc  = tc_row_indices[-1] + 1
-
-            # B: checkbox validation
-            format_requests.append({
-                "setDataValidation": {
-                    "range": cell_range(new_sheet_id, first_tc, 1, last_tc, 2),
-                    "rule": {
-                        "condition": {"type": "BOOLEAN"},
-                        "showCustomUi": True,
-                        "strict": True
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 5 — Final touches: auto-resize A-E + freeze header row
+        # ─────────────────────────────────────────────────────────────────────
+        sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": [
+            {
+                "autoResizeDimensions": {
+                    "dimensions": {
+                        "sheetId": new_sheet_id,
+                        "dimension": "COLUMNS",
+                        "startIndex": 0,
+                        "endIndex": 5
                     }
                 }
-            })
-
-            # B: center-align
-            format_requests.append({
-                "repeatCell": {
-                    "range": cell_range(new_sheet_id, first_tc, 1, last_tc, 2),
-                    "cell": {
-                        "userEnteredFormat": {
-                            "horizontalAlignment": "CENTER",
-                            "verticalAlignment": "MIDDLE"
-                        }
+            },
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": new_sheet_id,
+                        "gridProperties": {"frozenRowCount": 1}
                     },
-                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
-                }
-            })
-
-            # C: dropdown Type
-            format_requests.append({
-                "setDataValidation": {
-                    "range": cell_range(new_sheet_id, first_tc, 2, last_tc, 3),
-                    "rule": {
-                        "condition": {
-                            "type": "ONE_OF_LIST",
-                            "values": [
-                                {"userEnteredValue": "Existing"},
-                                {"userEnteredValue": "New Feature"}
-                            ]
-                        },
-                        "showCustomUi": True,
-                        "strict": True
-                    }
-                }
-            })
-
-            # C: center-align
-            format_requests.append({
-                "repeatCell": {
-                    "range": cell_range(new_sheet_id, first_tc, 2, last_tc, 3),
-                    "cell": {
-                        "userEnteredFormat": {
-                            "horizontalAlignment": "CENTER",
-                            "verticalAlignment": "MIDDLE"
-                        }
-                    },
-                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
-                }
-            })
-
-            # D: dropdown Status
-            format_requests.append({
-                "setDataValidation": {
-                    "range": cell_range(new_sheet_id, first_tc, 3, last_tc, 4),
-                    "rule": {
-                        "condition": {
-                            "type": "ONE_OF_LIST",
-                            "values": [
-                                {"userEnteredValue": "Fail"},
-                                {"userEnteredValue": "Pass"}
-                            ]
-                        },
-                        "showCustomUi": True,
-                        "strict": True
-                    }
-                }
-            })
-
-            # D: Conditional formatting - Red for Fail, Green for Pass
-            # Add borders to create rounded button effect
-            border_style = {
-                "style": "SOLID",
-                "width": {"magnitude": 1, "unit": "PT"}
-            }
-
-            # Format all cells first as red (default value is Fail)
-            format_requests.append({
-                "repeatCell": {
-                    "range": cell_range(new_sheet_id, first_tc, 3, last_tc, 4),
-                    "cell": {
-                        "userEnteredFormat": {
-                            "backgroundColor": RED_BG,
-                            "textFormat": {"bold": True, "foregroundColor": WHITE_TXT},
-                            "horizontalAlignment": "CENTER",
-                            "verticalAlignment": "MIDDLE",
-                            "borders": {
-                                "left": border_style,
-                                "right": border_style,
-                                "top": border_style,
-                                "bottom": border_style
-                            }
-                        }
-                    },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,borders)"
-                }
-            })
-
-            # Add conditional formatting rule: if cell value = "Pass", use green
-            format_requests.append({
-                "addConditionalFormatRule": {
-                    "rule": {
-                        "ranges": [cell_range(new_sheet_id, first_tc, 3, last_tc, 4)],
-                        "booleanRule": {
-                            "condition": {
-                                "type": "TEXT_EQ",
-                                "values": [{"userEnteredValue": "Pass"}]
-                            },
-                            "format": {
-                                "backgroundColor": GREEN_BG,
-                                "textFormat": {"bold": True, "foregroundColor": WHITE_TXT},
-                                "borders": {
-                                    "left": border_style,
-                                    "right": border_style,
-                                    "top": border_style,
-                                    "bottom": border_style
-                                }
-                            }
-                        }
-                    },
-                    "index": 0
-                }
-            })
-
-        # 4. Auto-resize columns A-E
-        format_requests.append({
-            "autoResizeDimensions": {
-                "dimensions": {
-                    "sheetId": new_sheet_id,
-                    "dimension": "COLUMNS",
-                    "startIndex": 0,
-                    "endIndex": 5
+                    "fields": "gridProperties.frozenRowCount"
                 }
             }
-        })
+        ]}).execute()
+        print("✅ Auto-resize and freeze applied.")
 
-        # 5. Freeze header row
-        format_requests.append({
-            "updateSheetProperties": {
-                "properties": {
-                    "sheetId": new_sheet_id,
-                    "gridProperties": {"frozenRowCount": 1}
-                },
-                "fields": "gridProperties.frozenRowCount"
-            }
-        })
-
-        sheets.batchUpdate(spreadsheetId=SPREADSHEET,
-                           body={"requests": format_requests}).execute()
-
-        print(f"✅ Exported {total_failed} failed test case(s) to sheet '{sheet_name}'.")
+        print(f"\n🎉 Exported {total_failed} failed test case(s) to sheet '{sheet_name}'.")
         PYEOF
       env:
         GSHEET_SERVICE_ACCOUNT: ${{ secrets.L_GSHEET_SERVICE_ACCOUNT }}
@@ -736,8 +785,8 @@ jobs:
         export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
         export REPORT_URL="https://record360-report.web.app"
         export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.L_GSHEET_SPREADSHEET_ID }}/edit"
-        export BRANCH_WDIO="${{ github.event.inputs.branchWdio || 'master' }}"
-        export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || 'develop' }}"
+        export BRANCH_WDIO="${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}"
+        export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}"
 
         envsubst < .github/googleChat/dashboard-card.json > payload.json
 
