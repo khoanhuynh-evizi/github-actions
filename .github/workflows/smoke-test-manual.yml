@@ -105,8 +105,8 @@ jobs:
             echo "forceRun=true → skipping commit check, TEST WILL RUN"
             echo "true" > "$SHOULD_RUN_FILE"
           else
-            check_repo "$WDIO_REPO" "${{ github.event.inputs.branchWdio || 'master' }}" "$WDIO_TOKEN"
-            check_repo "$DASHBOARD_REPO" "${{ github.event.inputs.branchDashboard || 'develop' }}" "$DASHBOARD_TOKEN"
+            check_repo "$WDIO_REPO" "${{ github.event.inputs.branchWdio || DEFAULT_BRANCH_WDIO }}" "$WDIO_TOKEN"
+            check_repo "$DASHBOARD_REPO" "${{ github.event.inputs.branchDashboard || DEFAULT_BRANCH_DASHBOARD }}" "$DASHBOARD_TOKEN"
           fi
 
           SHOULD_RUN=$(cat "$SHOULD_RUN_FILE")
@@ -133,7 +133,7 @@ jobs:
       with:
         repository: ${{ secrets.WDIO_REPOS }}
         token: ${{ secrets.WDIO_ACCESS_TOKEN }}
-        ref: ${{ github.event.inputs.branchWdio || 'master' }}
+        ref: ${{ github.event.inputs.branchWdio || DEFAULT_BRANCH_WDIO }}
         path: wdio
 
     - name: Free disk space
@@ -172,7 +172,7 @@ jobs:
       env:
         CAPABILITIES: chrome
         MAX_INSTANCES: 2
-        R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_S }}
+        R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
 
     - name: WDIO Test Checker
       if: always()
@@ -595,7 +595,7 @@ jobs:
                         }
                     }
                 },
-                # C: dropdown Existing / New Feature
+                # C: dropdown Existing / New Feature — CHIP style = rounded pill
                 {
                     "setDataValidation": {
                         "range": cr(first_tc, 2, last_tc, 3),
@@ -608,11 +608,12 @@ jobs:
                                 ]
                             },
                             "showCustomUi": True,
-                            "strict": True
+                            "strict": True,
+                            "style": "CHIP"
                         }
                     }
                 },
-                # D: dropdown Fail / Pass
+                # D: dropdown Fail / Pass — CHIP style = rounded pill
                 {
                     "setDataValidation": {
                         "range": cr(first_tc, 3, last_tc, 4),
@@ -625,7 +626,8 @@ jobs:
                                 ]
                             },
                             "showCustomUi": True,
-                            "strict": True
+                            "strict": True,
+                            "style": "CHIP"
                         }
                     }
                 }
@@ -785,8 +787,8 @@ jobs:
         export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
         export REPORT_URL="https://record360-report.web.app"
         export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.L_GSHEET_SPREADSHEET_ID }}/edit"
-        export BRANCH_WDIO="${{ github.event.inputs.branchWdio || 'master' }}"
-        export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || 'develop' }}"
+        export BRANCH_WDIO="${{ github.event.inputs.branchWdio || DEFAULT_BRANCH_WDIO }}"
+        export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || DEFAULT_BRANCH_DASHBOARD }}"
 
         envsubst < .github/googleChat/dashboard-card.json > payload.json
 
