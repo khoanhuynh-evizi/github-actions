@@ -18,7 +18,7 @@ on:
         required: false
         default: ''
       branchWdio:
-        description: 'Branch WDIO
+        description: 'Branch WDIO'
         required: false
         default: ''
       branchDashboard:
