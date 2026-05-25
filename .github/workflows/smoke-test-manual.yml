@@ -375,8 +375,9 @@ jobs:
         for block in blocks:
             spec_last[block[0].strip()] = block
 
-        # Collect spec files that ultimately PASSED (including after retries)
-        passed_re = re.compile(r'PASSED in \S+ - (file:///\S+\.spec\.ts)')
+        # Collect spec filenames that ultimately PASSED (including after retries)
+        # Match both "PASSED in chrome - file:///..." and "PASSED in chrome - /src/..."
+        passed_re = re.compile(r'PASSED in \S+ - \S+/([^/]+\.spec\.ts)')
         ultimately_passed = set()
         for line in raw_lines:
             m = passed_re.search(line)
@@ -388,8 +389,9 @@ jobs:
 
         for spec_key, block in spec_last.items():
             # Skip spec files that ultimately passed (even after retries)
-            spec_path_m = re.search(r'(file:///\S+\.spec\.ts)', spec_key)
-            if spec_path_m and spec_path_m.group(1) in ultimately_passed:
+            # Extract just the filename from the spec block header line
+            spec_file_m = re.search(r'/([^/]+\.spec\.ts)', spec_key)
+            if spec_file_m and spec_file_m.group(1) in ultimately_passed:
                 continue
             feature_name    = None
             failed_in_block = []
@@ -793,6 +795,6 @@ jobs:
 
         envsubst < .github/googleChat/dashboard-card.json > payload.json
 
-        curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
+        curl -X POST "${{ secrets.GCHAT_WEBHOOK }}" \
           -H "Content-Type: application/json" \
           -d @payload.json
