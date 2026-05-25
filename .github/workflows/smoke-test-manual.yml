@@ -18,13 +18,13 @@ on:
         required: false
         default: ''
       branchWdio:
-        description: 'Branch WDIO'
-        required: true
-        default: 'master'
+        description: 'Branch WDIO
+        required: false
+        default: ''
       branchDashboard:
         description: 'Branch dashboard'
         required: false
-        default: 'develop'
+        default: ''
       dashboardUrl:
         description: 'Dashboard URL (Optional)'
         required: false
@@ -322,7 +322,7 @@ jobs:
     # EXPORT FAILED TEST CASES TO GOOGLE SHEETS
     # ─────────────────────────────────────────────────────────────────────────
     - name: Export Failed Test Cases to Google Sheets
-      if: ${{ !cancelled() }}
+      if: ${{ !cancelled() && env.FAILED != '0' }}
       run: |
         pip install --quiet google-auth google-auth-httplib2 google-api-python-client
 
@@ -406,15 +406,6 @@ jobs:
                     if label and label not in seen_tc:
                         seen_tc.add(label)
                         failed_in_block.append(label)
-
-            if not failed_in_block:
-                for line in lines:
-                    m = numbered_re.search(line)
-                    if m:
-                        label = clean_label(m.group(1))
-                        if label and label not in seen_tc:
-                            seen_tc.add(label)
-                            failed_in_block.append(label)
 
             if failed_in_block:
                 if feature_name not in feature_map:
