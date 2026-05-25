@@ -136,6 +136,15 @@ jobs:
         ref: ${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}
         path: wdio
 
+    - name: Log WDIO branch info
+      run: |
+        echo "=========================================="
+        echo "WDIO branch (input): ${{ github.event.inputs.branchWdio }}"
+        echo "WDIO branch (resolved): $(cd wdio && git rev-parse --abbrev-ref HEAD)"
+        echo "WDIO commit SHA: $(cd wdio && git rev-parse HEAD)"
+        echo "WDIO commit message: $(cd wdio && git log -1 --pretty=%s)"
+        echo "=========================================="
+
     - name: Free disk space
       run: |
         df -h
