@@ -211,8 +211,8 @@ jobs:
       run: |
         mkdir -p wdio/reports
         cat > wdio/reports/environment.properties << 'ENVEOF'
-        branch_auto=${{ github.event.inputs.branchWdio || 'master' }}
-        branch_code=${{ github.event.inputs.branchDashboard || 'develop' }}
+        branch_auto=${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}
+        branch_code=${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}
         ENVEOF
 
     - name: Generate Allure Report
