@@ -484,6 +484,7 @@ jobs:
             spreadsheetId=SPREADSHEET,
             body={"requests": [{"addSheet": {"properties": {
                 "title": sheet_name,
+                "index": 0,
                 "gridProperties": {
                     "rowCount": max(200, total_rows + 10),
                     "columnCount": TOTAL_COLS
