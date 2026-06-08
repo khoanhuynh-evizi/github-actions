@@ -29,14 +29,15 @@ on:
         description: 'submodule branch(e.g., master)'
         required: false
         type: string
+
 env:
-    PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
+  PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
 
 permissions:
   contents: read
   actions: read
   checks: write
-  
+
 jobs:
   test:
     runs-on: ${{ inputs.os-version || 'ubuntu-latest' }}
@@ -44,7 +45,7 @@ jobs:
       matrix:
         include:
           - os: ${{ inputs.os-version || 'ubuntu-latest' }}
-            version: ${{ inputs.sdk-version || '36' }}
+            version: ${{ inputs.sdk-version || '35' }}
             arch: x86_64
             target: google_apis
             profile: pixel_7
@@ -56,12 +57,12 @@ jobs:
           repository: ${{secrets.WDIO_ANDROID_REPOS}}
           ref: ${{ github.event.inputs.main-branch || 'master' }} # ${{ vars.WDIO_ANDROID_BRANCH }}
           submodules: true
-          
+
       - name: Checkout submodules at master branch
         if: ${{ github.event.inputs.submodule-branch != '' }}
         run: |
           git submodule foreach git checkout ${{ github.event.inputs.submodule-branch }}
-          
+
       - name: Download Test data from firebase
         if: "${{ inputs.useUrlTestData == true }}"
         run: |
@@ -90,25 +91,25 @@ jobs:
         with:
           distribution: 'jetbrains'
           java-version: '21'
-          
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # - name: Build App
-      #   run: ./gradlew assembleStagingDebug
-        
-      # - name: Build Test App
-      #   run: ./gradlew assembleStagingDebugAndroidTest
-        
       - name: Enable KVM for linux runners
         if: runner.os == 'Linux'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+
+      - name: Check KVM availability
+        run: |
+          sudo apt-get install -y cpu-checker
+          kvm-ok || echo "KVM not available"
+          ls -la /dev/kvm || echo "KVM device not found"
 
       - name: AVD cache
         uses: actions/cache@v4
@@ -118,7 +119,7 @@ jobs:
             ~/.android/avd/*
             ~/.android/adb*
           key: avd-${{ matrix.version }}-${{ matrix.os }}-${{ matrix.target }}
-          
+
       - name: Create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
         uses: reactivecircus/android-emulator-runner@v2
@@ -134,25 +135,10 @@ jobs:
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-load
+          disable-animations: true
           script: echo "Generated AVD snapshot for caching."
 
-      # - name: Free Disk Space (Ubuntu)
-      #   uses: xc2/free-disk-space@fbe203b3788f2bebe2c835a15925da303eaa5efe # v1.0.0
-      #   if: runner.os == 'Linux'
-      #   with:
-      #     tool-cache: false
-      #     # all of these default to true, but feel free to set to
-      #     # "false" if necessary for your workflow
-      #     # https://github.com/jlumbroso/free-disk-space/pull/26
-      #     android: false
-      #     dotnet: true
-      #     haskell: true
-      #     large-packages: true
-      #     docker-images: true
-      #     swap-storage: true
-          
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
         uses: reactivecircus/android-emulator-runner@v2
@@ -166,6 +152,7 @@ jobs:
           sdcard-path-or-size: 1024MB
           ram-size: 2048M
           heap-size: 512M
+          emulator-boot-timeout: 12000
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
@@ -174,7 +161,7 @@ jobs:
             adb shell wm density
             chmod +x ./scripts/run-testsuite.sh
             ./scripts/run-testsuite.sh --package=com.record360.app.test.tests --path="$PATH_TEST_SUITE"
-            
+
       - name: Execute custom instrument test ${{ inputs.instrument_options }} on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options != '' }}"
         uses: reactivecircus/android-emulator-runner@v2
@@ -188,6 +175,7 @@ jobs:
           sdcard-path-or-size: 2000M
           ram-size: 2048M
           heap-size: 512M
+          emulator-boot-timeout: 12000
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
@@ -196,7 +184,7 @@ jobs:
             adb shell wm density
             chmod +x ./scripts/run-tests.sh
             ./scripts/run-tests.sh --instrument-options=${{ inputs.instrument_options }}
-            
+
       - name: Upload reports on API ${{ matrix.version }}
         if: success() || failure()
         uses: actions/upload-artifact@v4
@@ -205,7 +193,7 @@ jobs:
           path: |
             app/build/outputs/*/connected/*
             app/build/reports/androidTests/connected/**
-            
+
       - name: Generate reports on API ${{ matrix.version }}
         uses: dorny/test-reporter@v1
         if: success() || failure()
