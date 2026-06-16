@@ -3,21 +3,12 @@ name: Smoke Test Daily (-s)
 on:
   schedule:
     - cron: '0 20 * * 0-4' # 03:00h every night UTC+7
-
   workflow_dispatch:
     inputs:
       suite:
         description: 'Suite name'
         required: true
         default: 'Smoke Test'
-      capabilities:
-        description: 'Platforms (comma-separated, e.g. chrome,chrome-ipad)'
-        required: false
-        default: 'chrome'
-      maxInstances:
-        description: 'Max parallel instances per capability'
-        required: false
-        default: '2'
       features:
         description: 'Feature (Optional)'
         required: false
@@ -43,16 +34,24 @@ on:
         required: false
         default: 'false'
         type: boolean
+      platforms:
+        description: 'Platforms to run (comma-separated: chrome,chrome-ipad,chrome-iphone,chrome-android,firefox)'
+        required: false
+        default: 'chrome'
 
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 1: Check if any repo had a commit in the last 24h
+  # ─────────────────────────────────────────────────────────────────────────────
   check-repos-commit:
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
 
     steps:
       - name: Check latest commits in WDIO & Dashboard repos
@@ -126,12 +125,31 @@ jobs:
 
           echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
 
-  chrome-ubuntu:
+      - name: Compute platforms matrix
+        id: matrix
+        run: |
+          DEFAULT="chrome"
+          INPUT="${{ github.event.inputs.platforms || '' }}"
+          PLATFORMS="${INPUT:-$DEFAULT}"
+          # Convert comma-separated string → JSON array: ["chrome","chrome-ipad",...]
+          JSON=$(echo "$PLATFORMS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | jq -R . | jq -sc .)
+          echo "matrix=$JSON" >> $GITHUB_OUTPUT
+          echo "Platforms: $JSON"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 2: Run tests — one job per platform via matrix strategy
+  # Each job uploads its own allure results + specs log as artifacts
+  # ─────────────────────────────────────────────────────────────────────────────
+  run-tests:
     needs: check-repos-commit
     if: needs.check-repos-commit.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Ho_Chi_Minh
+    strategy:
+      fail-fast: false   # other platforms keep running even if one fails
+      matrix:
+        capabilities: ${{ fromJSON(needs.check-repos-commit.outputs.matrix) }}
 
     steps:
     - name: Checkout workflow repo
@@ -167,71 +185,98 @@ jobs:
       working-directory: wdio
 
     - name: Clean old reports
-      run: rm -rf wdio/reports wdio/allure-report wdio/allure-history specs-reporter.log merged-reports
+      run: rm -rf wdio/reports wdio/allure-report
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # RUN TESTS — sequential per capability, merge reports afterward
-    # ─────────────────────────────────────────────────────────────────────────
-    - name: Run WebDriverIO Tests (cross-platform sequential)
+    - name: Run WebDriverIO Tests
       id: wdio
       run: |
-        CAPABILITIES_INPUT="${{ github.event.inputs.capabilities || 'chrome' }}"
-        IFS=',' read -ra CAPS <<< "$CAPABILITIES_INPUT"
-
-        echo "Platforms to run: ${CAPS[*]}"
-        echo "Total: ${#CAPS[@]} platform(s)"
-        echo ""
-
-        mkdir -p merged-reports
-
-        for cap in "${CAPS[@]}"; do
-          cap=$(echo "$cap" | xargs)   # trim whitespace
-          echo "========================================="
-          echo "▶ Running capability: $cap"
-          echo "========================================="
-
-          # Clear reports before each run to avoid mixing results
-          rm -rf wdio/reports
-          mkdir -p wdio/reports
-
-          cd wdio
-          CAPABILITIES="$cap" MAX_INSTANCES="${{ github.event.inputs.maxInstances || '2' }}" yarn test:local \
-              --suite="${{ github.event.inputs.suite || 'Smoke Test' }}" \
-              --features="${{ github.event.inputs.features }}" \
-              --featureTestCases="${{ github.event.inputs.featureTestCases }}" \
-            2>&1 | tee -a ../specs-reporter.log || true
-          cd ..
-
-          # Copy this capability's results into the merged folder
-          cp -r wdio/reports/. merged-reports/ 2>/dev/null || true
-          echo "✔ $cap reports saved ($(ls merged-reports | wc -l) total files so far)"
-          echo ""
-        done
-
-        # Point final reports dir to merged results
-        mkdir -p wdio/reports
-        cp -r merged-reports/. wdio/reports/ 2>/dev/null || true
-        echo "Merged report files: $(ls wdio/reports | wc -l)"
+        cd wdio
+        yarn test:local \
+            --suite="${{ github.event.inputs.suite || 'Smoke Test'}}" \
+            --features="${{ github.event.inputs.features }}" \
+            --featureTestCases="${{ github.event.inputs.featureTestCases }}" \
+          2>&1 | tee ../specs-reporter-${{ matrix.capabilities }}.log
       env:
+        CAPABILITIES: ${{ matrix.capabilities }}
+        MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
 
     - name: WDIO Test Checker
       if: always()
       run: |
-        if grep -qE "[0-9]+\s+failed" specs-reporter.log; then
+        if grep -qE "[0-9]+\s+failed" specs-reporter-${{ matrix.capabilities }}.log; then
           exit 1
         fi
 
-    - name: Upload spec reporter log
+    - name: Prefix allure result filenames to avoid collision on merge
+      if: always()
+      run: |
+        cd wdio/reports
+        for f in $(ls -A); do
+          [ "$f" = "history" ] && continue
+          mv "$f" "${{ matrix.capabilities }}-$f"
+        done
+
+    - name: Upload Allure results
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: specs-reporter-log
-        path: specs-reporter.log
+        name: allure-results-${{ matrix.capabilities }}
+        path: wdio/reports/
+        retention-days: 1
+
+    - name: Upload specs reporter log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: specs-log-${{ matrix.capabilities }}
+        path: specs-reporter-${{ matrix.capabilities }}.log
         retention-days: 7
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 3: Generate one Allure report per platform, build index page, deploy
+  # Runs even if some platform jobs failed (if: always())
+  # ─────────────────────────────────────────────────────────────────────────────
+  generate-report:
+    needs: run-tests
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Ho_Chi_Minh
+
+    steps:
+    - name: Checkout workflow repo
+      uses: actions/checkout@v4
+
+    # ── Download artifacts ────────────────────────────────────────────────────
+    - name: Download all Allure results
+      uses: actions/download-artifact@v4
+      with:
+        pattern: allure-results-*
+        path: allure-results/
+      # Creates: allure-results/allure-results-chrome/
+      #          allure-results/allure-results-chrome-ipad/  ...
+
+    - name: Reorganize downloaded artifact directories
+      run: |
+        # Rename allure-results/allure-results-{cap}/ → allure-results/{cap}/
+        for dir in allure-results/allure-results-*/; do
+          cap="${dir#allure-results/allure-results-}"
+          cap="${cap%/}"
+          mv "$dir" "allure-results/$cap/"
+        done
+
+    - name: Download all specs logs
+      uses: actions/download-artifact@v4
+      with:
+        pattern: specs-log-*
+        merge-multiple: true
+        path: specs-logs/
+      # Creates: specs-logs/specs-reporter-chrome.log
+      #          specs-logs/specs-reporter-chrome-ipad.log  ...
+
+    # ── Allure history ────────────────────────────────────────────────────────
     - name: Get Allure history
-      if: ${{ !cancelled() }}
       uses: actions/checkout@v4
       continue-on-error: true
       with:
@@ -239,34 +284,162 @@ jobs:
         token: ${{ secrets.WDIO_ACCESS_TOKEN }}
         ref: allure-history
         path: report-history
+      # Branch structure: allure-history/{cap}/last-history/
 
-    - name: Copy previous Allure history to reports (for trend graphs)
+    # ── Generate one report per platform ─────────────────────────────────────
+    - name: Generate Allure reports per platform
       if: ${{ !cancelled() }}
       run: |
-        mkdir -p wdio/reports/history
-        cp -r report-history/allure-history/last-history/. wdio/reports/history 2>/dev/null || \
-        cp -r report-history/last-history/. wdio/reports/history 2>/dev/null || true
+        mkdir -p deploy allure-history-branch/allure-history
 
-    - name: Create Allure environment.properties
-      if: ${{ !cancelled() }}
-      run: |
-        mkdir -p wdio/reports
-        cat > wdio/reports/environment.properties << ENVEOF
+        # Discover platforms from downloaded artifact directories (fully dynamic)
+        for CAP in allure-results/*/; do
+          CAP="${CAP#allure-results/}"
+          CAP="${CAP%/}"
+          RESULTS="allure-results/$CAP"
+
+          if [ ! -d "$RESULTS" ]; then
+            echo "⚠️  No results for $CAP — skipping"
+            continue
+          fi
+
+          # Write environment info shown in Allure UI
+          cat > "$RESULTS/environment.properties" << ENVEOF
+        Platform=$CAP
         branch_auto=${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}
         branch_code=${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}
-        platforms=${{ github.event.inputs.capabilities || 'chrome' }}
         ENVEOF
 
-    - name: Generate Allure Report
-      if: ${{ !cancelled() }}
-      run: npx --yes allure-commandline@2.37.0 generate wdio/reports --clean -o wdio/allure-report
+          # Copy previous history for trend graphs
+          HISTORY_SRC="report-history/allure-history/$CAP/last-history"
+          mkdir -p "$RESULTS/history"
+          cp -r "$HISTORY_SRC/." "$RESULTS/history" 2>/dev/null || true
 
-    - name: Save history for next run
+          echo "📊 Generating report for: $CAP"
+          npx --yes allure-commandline@2.37.0 generate "$RESULTS" --clean -o "deploy/$CAP"
+
+          # Save history for next run
+          mkdir -p "allure-history-branch/allure-history/$CAP"
+          cp -r "deploy/$CAP/history" "allure-history-branch/allure-history/$CAP/last-history"
+        done
+
+    # ── Index page ────────────────────────────────────────────────────────────
+    - name: Generate index.html
       if: ${{ !cancelled() }}
       run: |
-        mkdir -p allure-history-branch/allure-history
-        cp -r wdio/allure-report/history allure-history-branch/allure-history/last-history
+        DATE_TIME=$(date '+%d/%m/%Y %H:%M:%S')
 
+        get_platform_name() {
+          case "$1" in
+            chrome)         echo "Chrome Desktop" ;;
+            chrome-ipad)    echo "Chrome iPad" ;;
+            chrome-iphone)  echo "Chrome iPhone" ;;
+            chrome-android) echo "Chrome Android" ;;
+            firefox)        echo "Firefox" ;;
+            *)              echo "$1" ;;
+          esac
+        }
+
+        # Parse stats per platform — discover from specs-logs/ directory
+        declare -A P_PASSED P_FAILED P_TOTAL P_SKIPPED P_RETRIES P_DURATION
+        DISCOVERED_CAPS=()
+
+        for LOG in specs-logs/specs-reporter-*.log; do
+          [ -f "$LOG" ] || continue
+          CAP=$(basename "$LOG" | sed 's/specs-reporter-//;s/\.log//')
+          DISCOVERED_CAPS+=("$CAP")
+          CAP=$CAP  # reassign for the loop below
+        done
+
+        for CAP in "${DISCOVERED_CAPS[@]}"; do
+          LOG="specs-logs/specs-reporter-$CAP.log"
+          if [ -f "$LOG" ] && grep -q "Spec Files:" "$LOG"; then
+            LINE=$(grep "Spec Files:" "$LOG" | tail -1)
+            P_PASSED[$CAP]=$(echo "$LINE" | grep -oP '\d+(?=\s+passed)' || echo 0)
+            P_FAILED[$CAP]=$(echo "$LINE" | grep -oP '\d+(?=\s+failed)' || echo 0)
+            P_SKIPPED[$CAP]=$(echo "$LINE" | grep -oP '\d+(?=\s+skipped)' || echo 0)
+            P_RETRIES[$CAP]=$(echo "$LINE" | grep -oP '\d+(?=\s+retries)' || echo 0)
+            P_TOTAL[$CAP]=$(echo "$LINE" | grep -oP '\d+(?=\s+total)' || echo 0)
+            P_DURATION[$CAP]=$(echo "$LINE" | grep -oP '\d{2}:\d{2}:\d{2}' || echo "00:00:00")
+          else
+            P_PASSED[$CAP]=0
+            P_FAILED[$CAP]=0
+            P_SKIPPED[$CAP]=0
+            P_RETRIES[$CAP]=0
+            P_TOTAL[$CAP]=0
+            P_DURATION[$CAP]="00:00:00"
+          fi
+        done
+
+        # Write index.html
+        cat > deploy/index.html << 'HTMLEOF'
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Smoke Test Report</title>
+          <style>
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; padding: 32px 20px; color: #333; }
+            .card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); max-width: 820px; margin: 0 auto; padding: 32px; }
+            h2 { font-size: 22px; margin-bottom: 4px; }
+            .meta { color: #666; font-size: 14px; margin-bottom: 28px; }
+            table { width: 100%; border-collapse: collapse; }
+            th { background: #222; color: white; padding: 11px 14px; text-align: left; font-size: 13px; font-weight: 600; }
+            td { padding: 11px 14px; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+            tr:last-child td { border-bottom: none; }
+            tr:hover td { background: #fafafa; }
+            .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; }
+            .badge-pass { background: #e6f4ea; color: #137333; }
+            .badge-fail { background: #fce8e6; color: #c5221f; }
+            .badge-skip { background: #f1f3f4; color: #5f6368; }
+            a { color: #1a73e8; text-decoration: none; font-weight: 500; }
+            a:hover { text-decoration: underline; }
+            .num { font-variant-numeric: tabular-nums; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h2>🧪 Smoke Test Report</h2>
+        HTMLEOF
+
+        echo "    <p class=\"meta\">Run time: <strong>$DATE_TIME (UTC+7)</strong></p>" >> deploy/index.html
+        echo "    <table>" >> deploy/index.html
+        echo "      <thead><tr><th>Platform</th><th>Status</th><th>Passed</th><th>Failed</th><th>Skipped</th><th>Total</th><th>Duration</th><th>Report</th></tr></thead>" >> deploy/index.html
+        echo "      <tbody>" >> deploy/index.html
+
+        for CAP in "${DISCOVERED_CAPS[@]}"; do
+          NAME=$(get_platform_name "$CAP")
+          PASSED="${P_PASSED[$CAP]}"
+          FAILED="${P_FAILED[$CAP]}"
+          SKIPPED="${P_SKIPPED[$CAP]}"
+          TOTAL="${P_TOTAL[$CAP]}"
+          DURATION="${P_DURATION[$CAP]}"
+
+          if [ ! -d "deploy/$CAP" ]; then
+            BADGE='<span class="badge badge-skip">SKIPPED</span>'
+            LINK="—"
+          elif [ "$FAILED" != "0" ]; then
+            BADGE='<span class="badge badge-fail">FAILED</span>'
+            LINK="<a href=\"/$CAP/\">View →</a>"
+          else
+            BADGE='<span class="badge badge-pass">PASSED</span>'
+            LINK="<a href=\"/$CAP/\">View →</a>"
+          fi
+
+          echo "        <tr><td>$NAME</td><td>$BADGE</td><td class=\"num\">$PASSED</td><td class=\"num\">$FAILED</td><td class=\"num\">$SKIPPED</td><td class=\"num\">$TOTAL</td><td class=\"num\">$DURATION</td><td>$LINK</td></tr>" >> deploy/index.html
+        done
+
+        cat >> deploy/index.html << 'HTMLEOF'
+              </tbody>
+            </table>
+          </div>
+        </body>
+        </html>
+        HTMLEOF
+
+    # ── Push history + deploy ─────────────────────────────────────────────────
     - name: Push report history to branch
       if: ${{ !cancelled() }}
       uses: peaceiris/actions-gh-pages@v4
@@ -276,35 +449,22 @@ jobs:
         publish_branch: allure-history
         publish_dir: allure-history-branch
 
-    - name: Prepare deploy folder
-      if: ${{ !cancelled() }}
-      run: |
-        mkdir -p deploy
-        cp -r wdio/allure-report/* deploy/
-
-    - name: Upload Allure HTML
+    - name: Upload Allure HTML (per platform)
       if: ${{ !cancelled() }}
       uses: actions/upload-artifact@v4
       with:
         name: reports-html
-        path: wdio/allure-report/
+        path: deploy/
         retention-days: 7
 
-    - name: Upload Allure raw results
-      if: ${{ !cancelled() }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: reports-allure
-        path: wdio/reports/
-        retention-days: 7
-
-    - name: Create firebase config
+    - name: Create Firebase config
       if: ${{ !cancelled() }}
       run: |
         echo '{
           "hosting": {
             "public": "deploy",
             "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+            "cleanUrls": true,
             "limit": 3
           }
         }' > firebase.json
@@ -319,7 +479,7 @@ jobs:
       if: ${{ !cancelled() }}
       run: echo '${{ secrets.CHINH_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
 
-    - name: Deploy Allure Report to Firebase Hosting
+    - name: Deploy Allure Reports to Firebase Hosting
       if: ${{ !cancelled() }}
       uses: w9jds/firebase-action@v13.27.0
       with:
@@ -327,63 +487,40 @@ jobs:
       env:
         GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
 
-    - name: Parse Spec Reporter Result
-      if: ${{ !cancelled() }}
-      run: |
-        LOG=specs-reporter.log
-        if ! grep -q "Spec Files:" "$LOG"; then
-          echo "TOTAL=0" >> $GITHUB_ENV
-          echo "PASSED=0" >> $GITHUB_ENV
-          echo "FAILED=0" >> $GITHUB_ENV
-          echo "SKIPPED=0" >> $GITHUB_ENV
-          echo "RETRIES=0" >> $GITHUB_ENV
-          echo "DURATION=00:00:00" >> $GITHUB_ENV
-          echo "PLATFORMS=${{ github.event.inputs.capabilities || 'chrome' }}" >> $GITHUB_ENV
-          exit 0
-        fi
-
-        # Sum across all capability runs in the log
-        PASSED=$(grep "Spec Files:" "$LOG" | grep -oP '\d+(?=\s+passed)' | awk '{s+=$1} END {print s+0}')
-        RETRIES=$(grep "Spec Files:" "$LOG" | grep -oP '\d+(?=\s+retries)' | awk '{s+=$1} END {print s+0}')
-        FAILED=$(grep "Spec Files:" "$LOG" | grep -oP '\d+(?=\s+failed)' | awk '{s+=$1} END {print s+0}')
-        SKIPPED=$(grep "Spec Files:" "$LOG" | grep -oP '\d+(?=\s+skipped)' | awk '{s+=$1} END {print s+0}')
-        TOTAL=$(grep "Spec Files:" "$LOG" | grep -oP '\d+(?=\s+total)' | awk '{s+=$1} END {print s+0}')
-        DURATION=$(grep "Spec Files:" "$LOG" | grep -oP '\d{2}:\d{2}:\d{2}' | tail -1)
-
-        DENOMINATOR=$((TOTAL - SKIPPED))
-        if [ "$DENOMINATOR" -gt 0 ]; then
-          PASS_RATE=$(( PASSED * 100 / DENOMINATOR ))
-        else
-          PASS_RATE=0
-        fi
-
-        echo "TOTAL=$TOTAL" >> $GITHUB_ENV
-        echo "PASSED=$PASSED" >> $GITHUB_ENV
-        echo "FAILED=$FAILED" >> $GITHUB_ENV
-        echo "SKIPPED=$SKIPPED" >> $GITHUB_ENV
-        echo "RETRIES=$RETRIES" >> $GITHUB_ENV
-        echo "PASS_RATE=$PASS_RATE" >> $GITHUB_ENV
-        echo "DURATION=${DURATION:-00:00:00}" >> $GITHUB_ENV
-        echo "PLATFORMS=${{ github.event.inputs.capabilities || 'chrome' }}" >> $GITHUB_ENV
-
     # ─────────────────────────────────────────────────────────────────────────
-    # EXPORT FAILED TEST CASES TO GOOGLE SHEETS
+    # EXPORT FAILED TEST CASES TO GOOGLE SHEETS — grouped by platform
+    # Sheet structure:
+    #   Header row (dark)
+    #   ├─ Platform header row  e.g. "Chrome Desktop"  (steel blue)
+    #   │   ├─ Feature header row  e.g. "Login"  (yellow)
+    #   │   │   ├─ TC row  (TC-001 | ☑ | Existing | Fail | )
+    #   │   │   └─ TC row
+    #   │   └─ Feature header row ...
+    #   └─ Platform header row  e.g. "Chrome iPad"  (steel blue)
     # ─────────────────────────────────────────────────────────────────────────
     - name: Export Failed Test Cases to Google Sheets
-      if: ${{ !cancelled() && env.FAILED != '0' }}
+      if: ${{ !cancelled() }}
       run: |
         pip install --quiet google-auth google-auth-httplib2 google-api-python-client
 
         python3 << 'PYEOF'
         import os, re, json, datetime
+        from collections import OrderedDict
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
 
         # ── Config ────────────────────────────────────────────────────────────
         SA_JSON     = os.environ["GSHEET_SERVICE_ACCOUNT"]
         SPREADSHEET = os.environ["GSHEET_SPREADSHEET_ID"]
-        LOG_PATH    = "specs-reporter.log"
         SCOPES      = ["https://www.googleapis.com/auth/spreadsheets"]
+
+        PLATFORM_DISPLAY = {
+            "chrome":         "Chrome Desktop",
+            "chrome-ipad":    "Chrome iPad",
+            "chrome-iphone":  "Chrome iPhone",
+            "chrome-android": "Chrome Android",
+            "firefox":        "Firefox",
+        }
 
         # ── Auth ──────────────────────────────────────────────────────────────
         creds   = service_account.Credentials.from_service_account_info(
@@ -391,19 +528,15 @@ jobs:
         service = build("sheets", "v4", credentials=creds)
         sheets  = service.spreadsheets()
 
-        # ── Parse failed test cases grouped by feature ────────────────────────
-        prefix_re   = re.compile(r'^\[.*?\]\s*')
-        spec_re     = re.compile(r'^»\s+\S+\.spec\.ts')
-        cross_re    = re.compile(r'[✖✗×]\s+([\w]+-\d+[^@\n]*)')
-        numbered_re = re.compile(r'^\s*\d+\)\s+.*?([\w]+-\d+[^@\[\n]*)')
+        # ── Parse a single log file → feature_map ─────────────────────────────
+        def parse_log(log_path):
+            prefix_re   = re.compile(r'^\[.*?\]\s*')
+            spec_re     = re.compile(r'^»\s+\S+\.spec\.ts')
+            cross_re    = re.compile(r'[✖✗×]\s+([\w]+-\d+[^@\n]*)')
+            passed_re   = re.compile(r'PASSED in \S+ - \S+/([^/]+\.spec\.ts)')
 
-        def clean_label(raw):
-            label = re.sub(r'\s*\[.*', '', raw).strip().rstrip(':').strip()
-            return label
-
-        raw_lines = []
-        if os.path.exists(LOG_PATH):
-            with open(LOG_PATH, encoding="utf-8", errors="replace") as fh:
+            raw_lines = []
+            with open(log_path, encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     stripped = line.rstrip('\n')
                     if stripped and not stripped.startswith('[') and raw_lines:
@@ -411,82 +544,100 @@ jobs:
                     else:
                         raw_lines.append(prefix_re.sub('', stripped))
 
-        blocks, current = [], []
-        for line in raw_lines:
-            if spec_re.match(line.strip()):
-                if current:
-                    blocks.append(current)
-                current = [line]
-            else:
-                current.append(line)
-        if current:
-            blocks.append(current)
+            blocks, current = [], []
+            for line in raw_lines:
+                if spec_re.match(line.strip()):
+                    if current:
+                        blocks.append(current)
+                    current = [line]
+                else:
+                    current.append(line)
+            if current:
+                blocks.append(current)
 
-        spec_last = {}
-        for block in blocks:
-            spec_last[block[0].strip()] = block
+            spec_last = {}
+            for block in blocks:
+                spec_last[block[0].strip()] = block
 
-        passed_re = re.compile(r'PASSED in \S+ - \S+/([^/]+\.spec\.ts)')
-        ultimately_passed = set()
-        for line in raw_lines:
-            m = passed_re.search(line)
-            if m:
-                ultimately_passed.add(m.group(1))
-
-        from collections import OrderedDict
-        feature_map = OrderedDict()
-
-        for spec_key, block in spec_last.items():
-            spec_file_m = re.search(r'/([^/]+\.spec\.ts)', spec_key)
-            if spec_file_m and spec_file_m.group(1) in ultimately_passed:
-                continue
-            feature_name    = None
-            failed_in_block = []
-            seen_tc         = set()
-            lines           = block[1:]
-
-            for line in lines:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                if stripped.startswith(('[', '✖', '✗', '×', '-', '.')):
-                    continue
-                if re.match(r'^[\w]+-\d+', stripped) or re.match(r'^\d+\)', stripped):
-                    continue
-                feature_name = stripped
-                break
-
-            if not feature_name:
-                m = re.search(r'/([^/]+)\.spec\.ts', spec_key)
-                feature_name = m.group(1).replace('-', ' ').replace('_', ' ').title() if m else "Unknown"
-
-            for line in lines:
-                m = cross_re.search(line)
+            ultimately_passed = set()
+            for line in raw_lines:
+                m = passed_re.search(line)
                 if m:
-                    label = clean_label(m.group(1))
-                    if label and label not in seen_tc:
-                        seen_tc.add(label)
-                        failed_in_block.append(label)
+                    ultimately_passed.add(m.group(1))
 
-            if failed_in_block:
-                if feature_name not in feature_map:
-                    feature_map[feature_name] = []
-                for tc in failed_in_block:
-                    if tc not in feature_map[feature_name]:
-                        feature_map[feature_name].append(tc)
+            def clean_label(raw):
+                return re.sub(r'\s*\[.*', '', raw).strip().rstrip(':').strip()
 
-        if not feature_map:
-            print("No failed test cases found — skipping Google Sheets export.")
+            feature_map = OrderedDict()
+            for spec_key, block in spec_last.items():
+                spec_file_m = re.search(r'/([^/]+\.spec\.ts)', spec_key)
+                if spec_file_m and spec_file_m.group(1) in ultimately_passed:
+                    continue
+
+                feature_name = None
+                lines = block[1:]
+                for line in lines:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    if stripped.startswith(('[', '✖', '✗', '×', '-', '.')):
+                        continue
+                    if re.match(r'^[\w]+-\d+', stripped) or re.match(r'^\d+\)', stripped):
+                        continue
+                    feature_name = stripped
+                    break
+
+                if not feature_name:
+                    m = re.search(r'/([^/]+)\.spec\.ts', spec_key)
+                    feature_name = m.group(1).replace('-', ' ').replace('_', ' ').title() if m else "Unknown"
+
+                failed_in_block = []
+                seen_tc = set()
+                for line in lines:
+                    m = cross_re.search(line)
+                    if m:
+                        label = clean_label(m.group(1))
+                        if label and label not in seen_tc:
+                            seen_tc.add(label)
+                            failed_in_block.append(label)
+
+                if failed_in_block:
+                    if feature_name not in feature_map:
+                        feature_map[feature_name] = []
+                    for tc in failed_in_block:
+                        if tc not in feature_map[feature_name]:
+                            feature_map[feature_name].append(tc)
+
+            return feature_map
+
+        # ── Collect data per platform — discover from specs-logs/ dynamically ───
+        # platform_data: [(display_name, feature_map), ...]
+        import glob
+        platform_data = []
+        for log_path in sorted(glob.glob("specs-logs/specs-reporter-*.log")):
+            cap = os.path.basename(log_path).replace("specs-reporter-", "").replace(".log", "")
+            display_name = PLATFORM_DISPLAY.get(cap, cap)
+            feature_map = parse_log(log_path)
+            if feature_map:
+                platform_data.append((display_name, feature_map))
+
+        if not platform_data:
+            print("No failed test cases found across any platform — skipping Google Sheets export.")
             raise SystemExit(0)
 
-        total_failed = sum(len(v) for v in feature_map.values())
-        print(f"Found {total_failed} failed test case(s) across {len(feature_map)} feature(s):")
-        for feat, tcs in feature_map.items():
-            print(f"  [{feat}]")
-            for tc in tcs:
-                print(f"    • {tc}")
+        total_failed = sum(
+            sum(len(tcs) for tcs in fm.values())
+            for _, fm in platform_data
+        )
+        print(f"Found {total_failed} failed test case(s):")
+        for pname, fm in platform_data:
+            print(f"  [{pname}]")
+            for feat, tcs in fm.items():
+                print(f"    ({feat})")
+                for tc in tcs:
+                    print(f"      • {tc}")
 
-        # ── Resolve target sheet name (MM/DD or MM/DD-2, MM/DD-3 …) ──────────
+        # ── Resolve sheet name (MM/DD or MM/DD-2, …) ──────────────────────────
         tz        = datetime.timezone(datetime.timedelta(hours=7))
         today     = datetime.datetime.now(tz)
         base_name = today.strftime("%m/%d")
@@ -501,20 +652,26 @@ jobs:
             idx += 1
 
         # ── Build row data ────────────────────────────────────────────────────
+        # Columns: A=TCs | B=Run | C=Type | D=Status | E=Note | F-Z=empty
         TOTAL_COLS = 26
         EMPTY      = [""] * (TOTAL_COLS - 5)
+        header_row = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
 
-        header_row          = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
-        all_rows            = [header_row]
-        feature_row_indices = []
-        tc_row_indices      = []
+        all_rows             = [header_row]
+        platform_row_indices = []
+        feature_row_indices  = []
+        tc_row_indices       = []
 
-        for feat_name, tcs in feature_map.items():
-            feature_row_indices.append(len(all_rows))
-            all_rows.append([feat_name] + [""] * (TOTAL_COLS - 1))
-            for tc in tcs:
-                tc_row_indices.append(len(all_rows))
-                all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
+        for display_name, feature_map in platform_data:
+            platform_row_indices.append(len(all_rows))
+            all_rows.append([display_name] + [""] * (TOTAL_COLS - 1))
+
+            for feat_name, tcs in feature_map.items():
+                feature_row_indices.append(len(all_rows))
+                all_rows.append([feat_name] + [""] * (TOTAL_COLS - 1))
+                for tc in tcs:
+                    tc_row_indices.append(len(all_rows))
+                    all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
 
         total_rows = len(all_rows)
 
@@ -533,20 +690,28 @@ jobs:
         new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
         print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
 
+        # ── Helper ────────────────────────────────────────────────────────────
         def cr(r1, c1, r2, c2):
             return {"sheetId": new_sheet_id,
                     "startRowIndex": r1, "endRowIndex": r2,
                     "startColumnIndex": c1, "endColumnIndex": c2}
 
+        # ── Colors ────────────────────────────────────────────────────────────
         DARK_BG   = {"red": 0.2,   "green": 0.2,   "blue": 0.2}
-        YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}
+        STEEL_BG  = {"red": 0.267, "green": 0.447, "blue": 0.769}  # platform header
+        YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}    # feature header
         RED_BG    = {"red": 0.863, "green": 0.196,  "blue": 0.184}
         GREEN_BG  = {"red": 0.118, "green": 0.588,  "blue": 0.235}
         GRAY_BG   = {"red": 0.851, "green": 0.851,  "blue": 0.851}
         WHITE     = {"red": 1.0,   "green": 1.0,    "blue": 1.0}
         BLACK     = {"red": 0.0,   "green": 0.0,    "blue": 0.0}
 
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 1 — Cell formatting
+        # ─────────────────────────────────────────────────────────────────────
         fmt_requests = []
+
+        # 1a. Header row
         fmt_requests.append({
             "repeatCell": {
                 "range": cr(0, 0, 1, TOTAL_COLS),
@@ -560,6 +725,22 @@ jobs:
             }
         })
 
+        # 1b. Platform header rows — steel blue, white bold
+        for r in platform_row_indices:
+            fmt_requests.append({
+                "repeatCell": {
+                    "range": cr(r, 0, r + 1, TOTAL_COLS),
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": STEEL_BG,
+                        "textFormat": {"bold": True, "foregroundColor": WHITE, "fontSize": 10},
+                        "horizontalAlignment": "LEFT",
+                        "verticalAlignment": "MIDDLE"
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+        # 1c. Feature header rows — yellow, black bold
         for r in feature_row_indices:
             fmt_requests.append({
                 "repeatCell": {
@@ -577,24 +758,54 @@ jobs:
         if tc_row_indices:
             first_tc = tc_row_indices[0]
             last_tc  = tc_row_indices[-1] + 1
-            for col, align in [(1, "CENTER"), (2, "CENTER"), (3, "CENTER")]:
-                fmt_requests.append({
-                    "repeatCell": {
-                        "range": cr(first_tc, col, last_tc, col + 1),
-                        "cell": {"userEnteredFormat": {
-                            "horizontalAlignment": align,
-                            "verticalAlignment": "MIDDLE"
-                        }},
-                        "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
-                    }
-                })
 
-        sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": fmt_requests}).execute()
+            # 1d. Column B (Run) — center
+            fmt_requests.append({
+                "repeatCell": {
+                    "range": cr(first_tc, 1, last_tc, 2),
+                    "cell": {"userEnteredFormat": {
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE"
+                    }},
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+            # 1e. Column C (Type) — center
+            fmt_requests.append({
+                "repeatCell": {
+                    "range": cr(first_tc, 2, last_tc, 3),
+                    "cell": {"userEnteredFormat": {
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE"
+                    }},
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+            # 1f. Column D (Status) — center
+            fmt_requests.append({
+                "repeatCell": {
+                    "range": cr(first_tc, 3, last_tc, 4),
+                    "cell": {"userEnteredFormat": {
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE"
+                    }},
+                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                }
+            })
+
+        sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                           body={"requests": fmt_requests}).execute()
         print("✅ Cell formatting applied.")
 
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 2 — Data validation
+        # ─────────────────────────────────────────────────────────────────────
         if tc_row_indices:
             first_tc = tc_row_indices[0]
             last_tc  = tc_row_indices[-1] + 1
+
             val_requests = [
                 {
                     "setDataValidation": {
@@ -627,61 +838,54 @@ jobs:
                     }
                 }
             ]
-            sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": val_requests}).execute()
+            sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                               body={"requests": val_requests}).execute()
             print("✅ Data validation applied.")
 
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 3 — Conditional formatting (chip colours)
+        # ─────────────────────────────────────────────────────────────────────
         if tc_row_indices:
             first_tc = tc_row_indices[0]
             last_tc  = tc_row_indices[-1] + 1
+
             cond_requests = [
-                {
-                    "addConditionalFormatRule": {
-                        "rule": {
-                            "ranges": [cr(first_tc, 2, last_tc, 3)],
-                            "booleanRule": {
-                                "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Existing"}]},
-                                "format": {"backgroundColor": GRAY_BG, "textFormat": {"bold": True, "foregroundColor": BLACK}}
-                            }
-                        }, "index": 0
+                {"addConditionalFormatRule": {"rule": {
+                    "ranges": [cr(first_tc, 2, last_tc, 3)],
+                    "booleanRule": {
+                        "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Existing"}]},
+                        "format": {"backgroundColor": GRAY_BG, "textFormat": {"bold": True, "foregroundColor": BLACK}}
                     }
-                },
-                {
-                    "addConditionalFormatRule": {
-                        "rule": {
-                            "ranges": [cr(first_tc, 2, last_tc, 3)],
-                            "booleanRule": {
-                                "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "New Feature"}]},
-                                "format": {"backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957}, "textFormat": {"bold": True, "foregroundColor": BLACK}}
-                            }
-                        }, "index": 1
+                }, "index": 0}},
+                {"addConditionalFormatRule": {"rule": {
+                    "ranges": [cr(first_tc, 2, last_tc, 3)],
+                    "booleanRule": {
+                        "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "New Feature"}]},
+                        "format": {"backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957}, "textFormat": {"bold": True, "foregroundColor": BLACK}}
                     }
-                },
-                {
-                    "addConditionalFormatRule": {
-                        "rule": {
-                            "ranges": [cr(first_tc, 3, last_tc, 4)],
-                            "booleanRule": {
-                                "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Fail"}]},
-                                "format": {"backgroundColor": RED_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}}
-                            }
-                        }, "index": 2
+                }, "index": 1}},
+                {"addConditionalFormatRule": {"rule": {
+                    "ranges": [cr(first_tc, 3, last_tc, 4)],
+                    "booleanRule": {
+                        "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Fail"}]},
+                        "format": {"backgroundColor": RED_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}}
                     }
-                },
-                {
-                    "addConditionalFormatRule": {
-                        "rule": {
-                            "ranges": [cr(first_tc, 3, last_tc, 4)],
-                            "booleanRule": {
-                                "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Pass"}]},
-                                "format": {"backgroundColor": GREEN_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}}
-                            }
-                        }, "index": 3
+                }, "index": 2}},
+                {"addConditionalFormatRule": {"rule": {
+                    "ranges": [cr(first_tc, 3, last_tc, 4)],
+                    "booleanRule": {
+                        "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Pass"}]},
+                        "format": {"backgroundColor": GREEN_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}}
                     }
-                }
+                }, "index": 3}},
             ]
-            sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": cond_requests}).execute()
+            sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                               body={"requests": cond_requests}).execute()
             print("✅ Conditional formatting applied.")
 
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 4 — Write data
+        # ─────────────────────────────────────────────────────────────────────
         sheets.values().update(
             spreadsheetId=SPREADSHEET,
             range=f"'{sheet_name}'!A1",
@@ -690,18 +894,18 @@ jobs:
         ).execute()
         print("✅ Data written.")
 
+        # ─────────────────────────────────────────────────────────────────────
+        # STEP 5 — Auto-resize A-E + freeze header
+        # ─────────────────────────────────────────────────────────────────────
         sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": [
-            {
-                "autoResizeDimensions": {
-                    "dimensions": {"sheetId": new_sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 5}
-                }
-            },
-            {
-                "updateSheetProperties": {
-                    "properties": {"sheetId": new_sheet_id, "gridProperties": {"frozenRowCount": 1}},
-                    "fields": "gridProperties.frozenRowCount"
-                }
-            }
+            {"autoResizeDimensions": {"dimensions": {
+                "sheetId": new_sheet_id, "dimension": "COLUMNS",
+                "startIndex": 0, "endIndex": 5
+            }}},
+            {"updateSheetProperties": {
+                "properties": {"sheetId": new_sheet_id, "gridProperties": {"frozenRowCount": 1}},
+                "fields": "gridProperties.frozenRowCount"
+            }}
         ]}).execute()
         print("✅ Auto-resize and freeze applied.")
 
@@ -711,6 +915,42 @@ jobs:
         GSHEET_SERVICE_ACCOUNT: ${{ secrets.L_GSHEET_SERVICE_ACCOUNT }}
         GSHEET_SPREADSHEET_ID:  ${{ secrets.L_GSHEET_SPREADSHEET_ID }}
 
+    # ── Aggregate stats + notify GChat ───────────────────────────────────────
+    - name: Aggregate stats from all platform logs
+      if: ${{ !cancelled() }}
+      run: |
+        TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0; RETRIES=0
+
+        for LOG in specs-logs/specs-reporter-*.log; do
+          [ -f "$LOG" ] || continue
+          LINE=$(grep "Spec Files:" "$LOG" | tail -1)
+          [ -z "$LINE" ] && continue
+
+          P=$(echo "$LINE" | grep -oP '\d+(?=\s+passed)'  || echo 0)
+          F=$(echo "$LINE" | grep -oP '\d+(?=\s+failed)'  || echo 0)
+          S=$(echo "$LINE" | grep -oP '\d+(?=\s+skipped)' || echo 0)
+          R=$(echo "$LINE" | grep -oP '\d+(?=\s+retries)' || echo 0)
+          T=$(echo "$LINE" | grep -oP '\d+(?=\s+total)'   || echo 0)
+
+          PASSED=$((PASSED + P))
+          FAILED=$((FAILED + F))
+          SKIPPED=$((SKIPPED + S))
+          RETRIES=$((RETRIES + R))
+          TOTAL=$((TOTAL + T))
+        done
+
+        PASS_RATE=0
+        DENOMINATOR=$((TOTAL - SKIPPED))
+        [ $DENOMINATOR -gt 0 ] && PASS_RATE=$((PASSED * 100 / DENOMINATOR))
+
+        echo "TOTAL=$TOTAL"       >> $GITHUB_ENV
+        echo "PASSED=$PASSED"     >> $GITHUB_ENV
+        echo "FAILED=$FAILED"     >> $GITHUB_ENV
+        echo "SKIPPED=$SKIPPED"   >> $GITHUB_ENV
+        echo "RETRIES=$RETRIES"   >> $GITHUB_ENV
+        echo "PASS_RATE=$PASS_RATE" >> $GITHUB_ENV
+        echo "DURATION=—"         >> $GITHUB_ENV
+
     - name: Notify Google Chat
       if: ${{ !cancelled() }}
       run: |
@@ -718,7 +958,7 @@ jobs:
         STATUS_COLOR="#0F9D58"
         STATUS_ICON="✅"
 
-        if [ "${{ job.status }}" != "success" ]; then
+        if [ "${{ env.FAILED }}" != "0" ] || [ "${{ job.status }}" != "success" ]; then
           STATUS="FAILED"
           STATUS_COLOR="#DB4437"
           STATUS_ICON="❌"
