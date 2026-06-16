@@ -3,12 +3,21 @@ name: Smoke Test Daily (-s)
 on:
   schedule:
     - cron: '0 20 * * 0-4' # 03:00h every night UTC+7
+
   workflow_dispatch:
     inputs:
       suite:
         description: 'Suite name'
         required: true
         default: 'Smoke Test'
+      capabilities:
+        description: 'Platforms (comma-separated, e.g. chrome,chrome-ipad)'
+        required: false
+        default: 'chrome'
+      maxInstances:
+        description: 'Max parallel instances per capability'
+        required: false
+        default: '2'
       features:
         description: 'Feature (Optional)'
         required: false
@@ -158,20 +167,52 @@ jobs:
       working-directory: wdio
 
     - name: Clean old reports
-      run: rm -rf wdio/reports wdio/allure-report wdio/allure-history specs-reporter.log
+      run: rm -rf wdio/reports wdio/allure-report wdio/allure-history specs-reporter.log merged-reports
 
-    - name: Run WebDriverIO Tests
+    # ─────────────────────────────────────────────────────────────────────────
+    # RUN TESTS — sequential per capability, merge reports afterward
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: Run WebDriverIO Tests (cross-platform sequential)
       id: wdio
       run: |
-        cd wdio
-        yarn test:local \
-            --suite="${{ github.event.inputs.suite || 'Smoke Test'}}" \
-            --features="${{ github.event.inputs.features }}" \
-            --featureTestCases="${{ github.event.inputs.featureTestCases }}" \
-          2>&1 | tee ../specs-reporter.log
+        CAPABILITIES_INPUT="${{ github.event.inputs.capabilities || 'chrome' }}"
+        IFS=',' read -ra CAPS <<< "$CAPABILITIES_INPUT"
+
+        echo "Platforms to run: ${CAPS[*]}"
+        echo "Total: ${#CAPS[@]} platform(s)"
+        echo ""
+
+        mkdir -p merged-reports
+
+        for cap in "${CAPS[@]}"; do
+          cap=$(echo "$cap" | xargs)   # trim whitespace
+          echo "========================================="
+          echo "▶ Running capability: $cap"
+          echo "========================================="
+
+          # Clear reports before each run to avoid mixing results
+          rm -rf wdio/reports
+          mkdir -p wdio/reports
+
+          cd wdio
+          CAPABILITIES="$cap" MAX_INSTANCES="${{ github.event.inputs.maxInstances || '2' }}" yarn test:local \
+              --suite="${{ github.event.inputs.suite || 'Smoke Test' }}" \
+              --features="${{ github.event.inputs.features }}" \
+              --featureTestCases="${{ github.event.inputs.featureTestCases }}" \
+            2>&1 | tee -a ../specs-reporter.log || true
+          cd ..
+
+          # Copy this capability's results into the merged folder
+          cp -r wdio/reports/. merged-reports/ 2>/dev/null || true
+          echo "✔ $cap reports saved ($(ls merged-reports | wc -l) total files so far)"
+          echo ""
+        done
+
+        # Point final reports dir to merged results
+        mkdir -p wdio/reports
+        cp -r merged-reports/. wdio/reports/ 2>/dev/null || true
+        echo "Merged report files: $(ls wdio/reports | wc -l)"
       env:
-        CAPABILITIES: chrome
-        MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
 
     - name: WDIO Test Checker
@@ -210,9 +251,10 @@ jobs:
       if: ${{ !cancelled() }}
       run: |
         mkdir -p wdio/reports
-        cat > wdio/reports/environment.properties << 'ENVEOF'
+        cat > wdio/reports/environment.properties << ENVEOF
         branch_auto=${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}
         branch_code=${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}
+        platforms=${{ github.event.inputs.capabilities || 'chrome' }}
         ENVEOF
 
     - name: Generate Allure Report
@@ -296,19 +338,24 @@ jobs:
           echo "SKIPPED=0" >> $GITHUB_ENV
           echo "RETRIES=0" >> $GITHUB_ENV
           echo "DURATION=00:00:00" >> $GITHUB_ENV
+          echo "PLATFORMS=${{ github.event.inputs.capabilities || 'chrome' }}" >> $GITHUB_ENV
           exit 0
         fi
 
-        LINE=$(grep "Spec Files:" "$LOG" | tail -1)
+        # Sum across all capability runs in the log
+        PASSED=$(grep "Spec Files:" "$LOG" | grep -oP '\d+(?=\s+passed)' | awk '{s+=$1} END {print s+0}')
+        RETRIES=$(grep "Spec Files:" "$LOG" | grep -oP '\d+(?=\s+retries)' | awk '{s+=$1} END {print s+0}')
+        FAILED=$(grep "Spec Files:" "$LOG" | grep -oP '\d+(?=\s+failed)' | awk '{s+=$1} END {print s+0}')
+        SKIPPED=$(grep "Spec Files:" "$LOG" | grep -oP '\d+(?=\s+skipped)' | awk '{s+=$1} END {print s+0}')
+        TOTAL=$(grep "Spec Files:" "$LOG" | grep -oP '\d+(?=\s+total)' | awk '{s+=$1} END {print s+0}')
+        DURATION=$(grep "Spec Files:" "$LOG" | grep -oP '\d{2}:\d{2}:\d{2}' | tail -1)
 
-        PASSED=$(echo "$LINE" | grep -oP '\d+(?=\s+passed)' || echo 0)
-        RETRIES=$(echo "$LINE" | grep -oP '\d+(?=\s+retries)' || echo 0)
-        FAILED=$(echo "$LINE" | grep -oP '\d+(?=\s+failed)' || echo 0)
-        SKIPPED=$(echo "$LINE" | grep -oP '\d+(?=\s+skipped)' || echo 0)
-        TOTAL=$(echo "$LINE" | grep -oP '\d+(?=\s+total)' || echo 0)
-        DURATION=$(echo "$LINE" | grep -oP '\d{2}:\d{2}:\d{2}' || echo "00:00:00")
-
-        PASS_RATE=$(( PASSED * 100 / (TOTAL - SKIPPED)))
+        DENOMINATOR=$((TOTAL - SKIPPED))
+        if [ "$DENOMINATOR" -gt 0 ]; then
+          PASS_RATE=$(( PASSED * 100 / DENOMINATOR ))
+        else
+          PASS_RATE=0
+        fi
 
         echo "TOTAL=$TOTAL" >> $GITHUB_ENV
         echo "PASSED=$PASSED" >> $GITHUB_ENV
@@ -316,7 +363,8 @@ jobs:
         echo "SKIPPED=$SKIPPED" >> $GITHUB_ENV
         echo "RETRIES=$RETRIES" >> $GITHUB_ENV
         echo "PASS_RATE=$PASS_RATE" >> $GITHUB_ENV
-        echo "DURATION=$DURATION" >> $GITHUB_ENV
+        echo "DURATION=${DURATION:-00:00:00}" >> $GITHUB_ENV
+        echo "PLATFORMS=${{ github.event.inputs.capabilities || 'chrome' }}" >> $GITHUB_ENV
 
     # ─────────────────────────────────────────────────────────────────────────
     # EXPORT FAILED TEST CASES TO GOOGLE SHEETS
@@ -358,8 +406,6 @@ jobs:
             with open(LOG_PATH, encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     stripped = line.rstrip('\n')
-                    # Join terminal-wrapped continuation lines (lines not starting
-                    # with '[') to the previous line before stripping the prefix
                     if stripped and not stripped.startswith('[') and raw_lines:
                         raw_lines[-1] = raw_lines[-1] + stripped
                     else:
@@ -376,13 +422,10 @@ jobs:
         if current:
             blocks.append(current)
 
-        # Keep only the last retry block per spec file
         spec_last = {}
         for block in blocks:
             spec_last[block[0].strip()] = block
 
-        # Collect spec filenames that ultimately PASSED (including after retries)
-        # Match both "PASSED in chrome - file:///..." and "PASSED in chrome - /src/..."
         passed_re = re.compile(r'PASSED in \S+ - \S+/([^/]+\.spec\.ts)')
         ultimately_passed = set()
         for line in raw_lines:
@@ -394,8 +437,6 @@ jobs:
         feature_map = OrderedDict()
 
         for spec_key, block in spec_last.items():
-            # Skip spec files that ultimately passed (even after retries)
-            # Extract just the filename from the spec block header line
             spec_file_m = re.search(r'/([^/]+\.spec\.ts)', spec_key)
             if spec_file_m and spec_file_m.group(1) in ultimately_passed:
                 continue
@@ -460,21 +501,19 @@ jobs:
             idx += 1
 
         # ── Build row data ────────────────────────────────────────────────────
-        # Columns: A=TCs | B=Run | C=Type | D=Status | E=Note | F-Z=empty
         TOTAL_COLS = 26
         EMPTY      = [""] * (TOTAL_COLS - 5)
 
         header_row          = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
         all_rows            = [header_row]
-        feature_row_indices = []   # 0-based row indices for feature header rows
-        tc_row_indices      = []   # 0-based row indices for TC data rows
+        feature_row_indices = []
+        tc_row_indices      = []
 
         for feat_name, tcs in feature_map.items():
             feature_row_indices.append(len(all_rows))
             all_rows.append([feat_name] + [""] * (TOTAL_COLS - 1))
             for tc in tcs:
                 tc_row_indices.append(len(all_rows))
-                # B=True (boolean) → becomes checked checkbox after validation applied
                 all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
 
         total_rows = len(all_rows)
@@ -494,27 +533,20 @@ jobs:
         new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
         print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
 
-        # ── Helper ────────────────────────────────────────────────────────────
         def cr(r1, c1, r2, c2):
             return {"sheetId": new_sheet_id,
                     "startRowIndex": r1, "endRowIndex": r2,
                     "startColumnIndex": c1, "endColumnIndex": c2}
 
-        # ── Colors ────────────────────────────────────────────────────────────
         DARK_BG   = {"red": 0.2,   "green": 0.2,   "blue": 0.2}
         YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}
         RED_BG    = {"red": 0.863, "green": 0.196,  "blue": 0.184}
         GREEN_BG  = {"red": 0.118, "green": 0.588,  "blue": 0.235}
-        GRAY_BG   = {"red": 0.851, "green": 0.851,  "blue": 0.851}  # #D9D9D9 – Type chip
+        GRAY_BG   = {"red": 0.851, "green": 0.851,  "blue": 0.851}
         WHITE     = {"red": 1.0,   "green": 1.0,    "blue": 1.0}
         BLACK     = {"red": 0.0,   "green": 0.0,    "blue": 0.0}
 
-        # ─────────────────────────────────────────────────────────────────────
-        # STEP 1 — Apply all cell formatting (repeatCell) in one batchUpdate
-        # ─────────────────────────────────────────────────────────────────────
         fmt_requests = []
-
-        # 1a. Header row: dark background, white bold text, centered
         fmt_requests.append({
             "repeatCell": {
                 "range": cr(0, 0, 1, TOTAL_COLS),
@@ -528,7 +560,6 @@ jobs:
             }
         })
 
-        # 1b. Feature header rows: yellow background, bold black text, left-aligned
         for r in feature_row_indices:
             fmt_requests.append({
                 "repeatCell": {
@@ -546,200 +577,111 @@ jobs:
         if tc_row_indices:
             first_tc = tc_row_indices[0]
             last_tc  = tc_row_indices[-1] + 1
+            for col, align in [(1, "CENTER"), (2, "CENTER"), (3, "CENTER")]:
+                fmt_requests.append({
+                    "repeatCell": {
+                        "range": cr(first_tc, col, last_tc, col + 1),
+                        "cell": {"userEnteredFormat": {
+                            "horizontalAlignment": align,
+                            "verticalAlignment": "MIDDLE"
+                        }},
+                        "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
+                    }
+                })
 
-            # 1c. Column B (Run): center-align for checkbox display
-            fmt_requests.append({
-                "repeatCell": {
-                    "range": cr(first_tc, 1, last_tc, 2),
-                    "cell": {"userEnteredFormat": {
-                        "horizontalAlignment": "CENTER",
-                        "verticalAlignment": "MIDDLE"
-                    }},
-                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
-                }
-            })
-
-            # 1d. Column C (Type): center-align only — background set via conditional format
-            #     so Google Sheets renders the native chip/rounded style
-            fmt_requests.append({
-                "repeatCell": {
-                    "range": cr(first_tc, 2, last_tc, 3),
-                    "cell": {"userEnteredFormat": {
-                        "horizontalAlignment": "CENTER",
-                        "verticalAlignment": "MIDDLE"
-                    }},
-                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
-                }
-            })
-
-            # 1e. Column D (Status): center-align only — background set via conditional format
-            fmt_requests.append({
-                "repeatCell": {
-                    "range": cr(first_tc, 3, last_tc, 4),
-                    "cell": {"userEnteredFormat": {
-                        "horizontalAlignment": "CENTER",
-                        "verticalAlignment": "MIDDLE"
-                    }},
-                    "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"
-                }
-            })
-
-        sheets.batchUpdate(spreadsheetId=SPREADSHEET,
-                           body={"requests": fmt_requests}).execute()
+        sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": fmt_requests}).execute()
         print("✅ Cell formatting applied.")
 
-        # ─────────────────────────────────────────────────────────────────────
-        # STEP 2 — Apply data validation (checkbox + dropdowns) separately
-        # ─────────────────────────────────────────────────────────────────────
         if tc_row_indices:
             first_tc = tc_row_indices[0]
             last_tc  = tc_row_indices[-1] + 1
-
             val_requests = [
-                # B: BOOLEAN → renders as checkbox (showCustomUi:true)
                 {
                     "setDataValidation": {
                         "range": cr(first_tc, 1, last_tc, 2),
-                        "rule": {
-                            "condition": {"type": "BOOLEAN"},
-                            "showCustomUi": True,
-                            "strict": True
-                        }
+                        "rule": {"condition": {"type": "BOOLEAN"}, "showCustomUi": True, "strict": True}
                     }
                 },
-                # C: dropdown Existing / New Feature
                 {
                     "setDataValidation": {
                         "range": cr(first_tc, 2, last_tc, 3),
                         "rule": {
                             "condition": {
                                 "type": "ONE_OF_LIST",
-                                "values": [
-                                    {"userEnteredValue": "Existing"},
-                                    {"userEnteredValue": "New Feature"}
-                                ]
+                                "values": [{"userEnteredValue": "Existing"}, {"userEnteredValue": "New Feature"}]
                             },
-                            "showCustomUi": True,
-                            "strict": True
+                            "showCustomUi": True, "strict": True
                         }
                     }
                 },
-                # D: dropdown Fail / Pass — CHIP style = rounded pill
                 {
                     "setDataValidation": {
                         "range": cr(first_tc, 3, last_tc, 4),
                         "rule": {
                             "condition": {
                                 "type": "ONE_OF_LIST",
-                                "values": [
-                                    {"userEnteredValue": "Fail"},
-                                    {"userEnteredValue": "Pass"}
-                                ]
+                                "values": [{"userEnteredValue": "Fail"}, {"userEnteredValue": "Pass"}]
                             },
-                            "showCustomUi": True,
-                            "strict": True
+                            "showCustomUi": True, "strict": True
                         }
                     }
                 }
             ]
-            sheets.batchUpdate(spreadsheetId=SPREADSHEET,
-                               body={"requests": val_requests}).execute()
+            sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": val_requests}).execute()
             print("✅ Data validation applied.")
 
-        # ─────────────────────────────────────────────────────────────────────
-        # STEP 3 — Conditional formatting for all dropdown values
-        #          This is what triggers Google Sheets native chip/rounded style
-        # ─────────────────────────────────────────────────────────────────────
         if tc_row_indices:
             first_tc = tc_row_indices[0]
             last_tc  = tc_row_indices[-1] + 1
-
             cond_requests = [
-                # Column C — Type: "Existing" → gray chip
                 {
                     "addConditionalFormatRule": {
                         "rule": {
                             "ranges": [cr(first_tc, 2, last_tc, 3)],
                             "booleanRule": {
-                                "condition": {
-                                    "type": "TEXT_EQ",
-                                    "values": [{"userEnteredValue": "Existing"}]
-                                },
-                                "format": {
-                                    "backgroundColor": GRAY_BG,
-                                    "textFormat": {"bold": True, "foregroundColor": BLACK}
-                                }
+                                "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Existing"}]},
+                                "format": {"backgroundColor": GRAY_BG, "textFormat": {"bold": True, "foregroundColor": BLACK}}
                             }
-                        },
-                        "index": 0
+                        }, "index": 0
                     }
                 },
-                # Column C — Type: "New Feature" → blue chip
                 {
                     "addConditionalFormatRule": {
                         "rule": {
                             "ranges": [cr(first_tc, 2, last_tc, 3)],
                             "booleanRule": {
-                                "condition": {
-                                    "type": "TEXT_EQ",
-                                    "values": [{"userEnteredValue": "New Feature"}]
-                                },
-                                "format": {
-                                    "backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957},
-                                    "textFormat": {"bold": True, "foregroundColor": BLACK}
-                                }
+                                "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "New Feature"}]},
+                                "format": {"backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957}, "textFormat": {"bold": True, "foregroundColor": BLACK}}
                             }
-                        },
-                        "index": 1
+                        }, "index": 1
                     }
                 },
-                # Column D — Status: "Fail" → red chip
                 {
                     "addConditionalFormatRule": {
                         "rule": {
                             "ranges": [cr(first_tc, 3, last_tc, 4)],
                             "booleanRule": {
-                                "condition": {
-                                    "type": "TEXT_EQ",
-                                    "values": [{"userEnteredValue": "Fail"}]
-                                },
-                                "format": {
-                                    "backgroundColor": RED_BG,
-                                    "textFormat": {"bold": True, "foregroundColor": WHITE}
-                                }
+                                "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Fail"}]},
+                                "format": {"backgroundColor": RED_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}}
                             }
-                        },
-                        "index": 2
+                        }, "index": 2
                     }
                 },
-                # Column D — Status: "Pass" → green chip
                 {
                     "addConditionalFormatRule": {
                         "rule": {
                             "ranges": [cr(first_tc, 3, last_tc, 4)],
                             "booleanRule": {
-                                "condition": {
-                                    "type": "TEXT_EQ",
-                                    "values": [{"userEnteredValue": "Pass"}]
-                                },
-                                "format": {
-                                    "backgroundColor": GREEN_BG,
-                                    "textFormat": {"bold": True, "foregroundColor": WHITE}
-                                }
+                                "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Pass"}]},
+                                "format": {"backgroundColor": GREEN_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}}
                             }
-                        },
-                        "index": 3
+                        }, "index": 3
                     }
                 }
             ]
-            sheets.batchUpdate(spreadsheetId=SPREADSHEET,
-                               body={"requests": cond_requests}).execute()
+            sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": cond_requests}).execute()
             print("✅ Conditional formatting applied.")
 
-        # ─────────────────────────────────────────────────────────────────────
-        # STEP 4 — Write all row data
-        # Writing AFTER validation so boolean True renders as checked checkbox
-        # ─────────────────────────────────────────────────────────────────────
         sheets.values().update(
             spreadsheetId=SPREADSHEET,
             range=f"'{sheet_name}'!A1",
@@ -748,26 +690,15 @@ jobs:
         ).execute()
         print("✅ Data written.")
 
-        # ─────────────────────────────────────────────────────────────────────
-        # STEP 5 — Final touches: auto-resize A-E + freeze header row
-        # ─────────────────────────────────────────────────────────────────────
         sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": [
             {
                 "autoResizeDimensions": {
-                    "dimensions": {
-                        "sheetId": new_sheet_id,
-                        "dimension": "COLUMNS",
-                        "startIndex": 0,
-                        "endIndex": 5
-                    }
+                    "dimensions": {"sheetId": new_sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 5}
                 }
             },
             {
                 "updateSheetProperties": {
-                    "properties": {
-                        "sheetId": new_sheet_id,
-                        "gridProperties": {"frozenRowCount": 1}
-                    },
+                    "properties": {"sheetId": new_sheet_id, "gridProperties": {"frozenRowCount": 1}},
                     "fields": "gridProperties.frozenRowCount"
                 }
             }
