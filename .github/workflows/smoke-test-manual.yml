@@ -211,10 +211,11 @@ jobs:
     - name: Prefix allure result filenames to avoid collision on merge
       if: always()
       run: |
+        mkdir -p wdio/reports
         cd wdio/reports
-        for f in $(ls -A); do
+        for f in $(ls -A 2>/dev/null); do
           [ "$f" = "history" ] && continue
-          mv "$f" "${{ matrix.capabilities }}-$f"
+          mv "$f" "${{ matrix.capabilities }}-$f" 2>/dev/null || true
         done
 
     - name: Upload Allure results
@@ -298,9 +299,9 @@ jobs:
           CAP="${CAP%/}"
           RESULTS="allure-results/$CAP"
 
-          if [ ! -d "$RESULTS" ]; then
-            echo "⚠️  No results for $CAP — skipping"
-            continue
+          if [ ! -d "$RESULTS" ] || [ -z "$(ls -A "$RESULTS" 2>/dev/null)" ]; then
+            echo "⚠️  No results for $CAP — generating empty report"
+            mkdir -p "$RESULTS"
           fi
 
           # Write environment info shown in Allure UI
@@ -316,7 +317,8 @@ jobs:
           cp -r "$HISTORY_SRC/." "$RESULTS/history" 2>/dev/null || true
 
           echo "📊 Generating report for: $CAP"
-          npx --yes allure-commandline@2.37.0 generate "$RESULTS" --clean -o "deploy/$CAP"
+          npx --yes allure-commandline@2.37.0 generate "$RESULTS" --clean -o "deploy/$CAP" || \
+            echo "⚠️ Allure generate failed for $CAP — report may be empty"
 
           # Save history for next run
           mkdir -p "allure-history-branch/allure-history/$CAP"
