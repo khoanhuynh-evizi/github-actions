@@ -408,13 +408,14 @@ jobs:
 
         echo "    <p class=\"meta\">Run time: <strong>$DATE_TIME (UTC+7)</strong></p>" >> deploy/index.html
         echo "    <table>" >> deploy/index.html
-        echo "      <thead><tr><th>Platform</th><th>Status</th><th>Passed</th><th>Failed</th><th>Skipped</th><th>Total</th><th>Duration</th><th>Report</th></tr></thead>" >> deploy/index.html
+        echo "      <thead><tr><th>Platform</th><th>Status</th><th>Passed</th><th>Failed</th><th>Retries</th><th>Skipped</th><th>Total</th><th>Duration</th><th>Report</th></tr></thead>" >> deploy/index.html
         echo "      <tbody>" >> deploy/index.html
 
         for CAP in "${DISCOVERED_CAPS[@]}"; do
           NAME=$(get_platform_name "$CAP")
           PASSED="${P_PASSED[$CAP]}"
           FAILED="${P_FAILED[$CAP]}"
+          RETRIES="${P_RETRIES[$CAP]}"
           SKIPPED="${P_SKIPPED[$CAP]}"
           TOTAL="${P_TOTAL[$CAP]}"
           DURATION="${P_DURATION[$CAP]}"
@@ -430,7 +431,7 @@ jobs:
             LINK="<a href=\"/$CAP/\">View →</a>"
           fi
 
-          echo "        <tr><td>$NAME</td><td>$BADGE</td><td class=\"num\">$PASSED</td><td class=\"num\">$FAILED</td><td class=\"num\">$SKIPPED</td><td class=\"num\">$TOTAL</td><td class=\"num\">$DURATION</td><td>$LINK</td></tr>" >> deploy/index.html
+          echo "        <tr><td>$NAME</td><td>$BADGE</td><td class=\"num\">$PASSED</td><td class=\"num\">$FAILED</td><td class=\"num\">$RETRIES</td><td class=\"num\">$SKIPPED</td><td class=\"num\">$TOTAL</td><td class=\"num\">$DURATION</td><td>$LINK</td></tr>" >> deploy/index.html
         done
 
         cat >> deploy/index.html << 'HTMLEOF'
@@ -956,25 +957,82 @@ jobs:
     - name: Notify Google Chat
       if: ${{ !cancelled() }}
       run: |
-        STATUS="PASSED"
-        STATUS_COLOR="#0F9D58"
-        STATUS_ICON="✅"
-
         if [ "${{ env.FAILED }}" != "0" ] || [ "${{ job.status }}" != "success" ]; then
-          STATUS="FAILED"
-          STATUS_COLOR="#DB4437"
-          STATUS_ICON="❌"
+          export STATUS_ICON="❌"
+        else
+          export STATUS_ICON="✅"
         fi
 
-        export STATUS STATUS_COLOR STATUS_ICON
         export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
-        export REPORT_URL="https://record360-report.web.app"
-        export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.L_GSHEET_SPREADSHEET_ID }}/edit"
-        export BRANCH_WDIO="${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}"
-        export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}"
 
-        envsubst < .github/googleChat/dashboard-card.json > payload.json
+        python3 << 'PYEOF'
+        import json, os, re, glob
+
+        PLATFORM_DISPLAY = {
+            "chrome":         "Chrome Desktop",
+            "chrome-ipad":    "Chrome iPad",
+            "chrome-iphone":  "Chrome iPhone",
+            "chrome-android": "Chrome Android",
+            "firefox":        "Firefox",
+        }
+
+        def fmt_duration(d):
+            h, m, s = (int(x) for x in d.split(':'))
+            total_min = h * 60 + m
+            return f"{total_min}m{s:02d}s"
+
+        # Build per-platform lines
+        lines = []
+        for log_path in sorted(glob.glob("specs-logs/specs-reporter-*.log")):
+            cap  = os.path.basename(log_path).replace("specs-reporter-", "").replace(".log", "")
+            name = PLATFORM_DISPLAY.get(cap, cap)
+
+            content = open(log_path).read()
+            spec_line = next((l for l in reversed(content.splitlines()) if "Spec Files:" in l), "")
+
+            if spec_line:
+                p = int(m.group(1)) if (m := re.search(r'(\d+)\s+passed', spec_line)) else 0
+                f = int(m.group(1)) if (m := re.search(r'(\d+)\s+failed', spec_line)) else 0
+                t = int(m.group(1)) if (m := re.search(r'(\d+)\s+total',  spec_line)) else 0
+                d = fmt_duration(m.group(1)) if (m := re.search(r'(\d{2}:\d{2}:\d{2})', spec_line)) else "—"
+                icon = "✅" if f == 0 else "❌"
+                lines.append(f"<b>{name}</b> &nbsp; {icon} &nbsp; {p}/{t} &nbsp; ⏱ {d}")
+            else:
+                lines.append(f"<b>{name}</b> &nbsp; ⚠️ &nbsp; No results")
+
+        platform_text = "<br>".join(lines)
+        branch_wdio      = os.environ["BRANCH_WDIO"]
+        branch_dashboard = os.environ["BRANCH_DASHBOARD"]
+
+        body = (
+            platform_text +
+            f"<br><br>🌿 <b>Branch auto:</b> <code>{branch_wdio}</code>"
+            f"<br>🌿 <b>Branch code:</b> <code>{branch_dashboard}</code>"
+        )
+
+        payload = {"cardsV2": [{"cardId": "wdio-report", "card": {
+            "header": {
+                "title":    f"{os.environ['STATUS_ICON']} Record360 - Dashboard Automation Report",
+                "subtitle": f"Smoke Test · {os.environ['DATE_TIME']}"
+            },
+            "sections": [{"widgets": [
+                {"buttonList": {"buttons": [
+                    {"text": "📄 VIEW ALLURE REPORT", "onClick": {"openLink": {"url": os.environ["REPORT_URL"]}}},
+                    {"text": "📊 VIEW TEST RESULTS",  "onClick": {"openLink": {"url": os.environ["GSHEET_URL"]}}}
+                ]}},
+                {"textParagraph": {"text": body}}
+            ]}]
+        }}]}
+
+        with open("payload.json", "w") as fh:
+            json.dump(payload, fh)
+        PYEOF
 
         curl -X POST "${{ secrets.GCHAT_WEBHOOK }}" \
           -H "Content-Type: application/json" \
           -d @payload.json
+      env:
+        REPORT_URL:       https://record360-report.web.app
+        GSHEET_URL:       https://docs.google.com/spreadsheets/d/${{ secrets.L_GSHEET_SPREADSHEET_ID }}/edit
+        BRANCH_WDIO:      ${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}
+        BRANCH_DASHBOARD: ${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}
