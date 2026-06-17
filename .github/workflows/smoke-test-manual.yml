@@ -197,9 +197,10 @@ jobs:
             --featureTestCases="${{ github.event.inputs.featureTestCases }}" \
           2>&1 | tee ../specs-reporter-${{ matrix.capabilities }}.log
       env:
-        CAPABILITIES: ${{ matrix.capabilities }}
-        MAX_INSTANCES: 2
+        CAPABILITIES:       ${{ matrix.capabilities }}
+        MAX_INSTANCES:      2
         R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
+        ALL_PLATFORMS:      ${{ github.event.inputs.platforms || 'chrome' }}
 
     - name: WDIO Test Checker
       if: always()
