@@ -29,9 +29,6 @@ on:
         description: 'submodule branch(e.g., master)'
         required: false
         type: string
-<<<<<<< Updated upstream
-
-=======
       device-profile:
         description: 'Android device profile to use (e.g., pixel_7, pixel_6, Nexus 5X, pixel_tablet)'
         required: false
@@ -47,7 +44,6 @@ on:
         required: false
         type: string
         default: 'google_apis'
->>>>>>> Stashed changes
 env:
   PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
 
@@ -63,17 +59,10 @@ jobs:
       matrix:
         include:
           - os: ${{ inputs.os-version || 'ubuntu-latest' }}
-<<<<<<< Updated upstream
-            version: ${{ inputs.sdk-version || '35' }}
-            arch: x86_64
-            target: google_apis
-            profile: pixel_7
-=======
             version: ${{ inputs.sdk-version || '36' }}
             arch: ${{ inputs.device-arch || 'x86_64' }}
             target: ${{ inputs.device-target || 'google_apis' }}
             profile: ${{ inputs.device-profile || 'pixel_7' }}
->>>>>>> Stashed changes
     steps:
       - name: Checkout
         uses: actions/checkout@v4
