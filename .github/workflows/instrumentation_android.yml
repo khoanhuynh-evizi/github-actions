@@ -59,7 +59,7 @@ jobs:
       matrix:
         include:
           - os: ${{ inputs.os-version || 'ubuntu-latest' }}
-            version: ${{ inputs.sdk-version || '36' }}
+            version: ${{ inputs.sdk-version || '35' }}
             arch: ${{ inputs.device-arch || 'x86_64' }}
             target: ${{ inputs.device-target || 'google_apis' }}
             profile: ${{ inputs.device-profile || 'pixel_7' }}
@@ -90,6 +90,15 @@ jobs:
         env:
           DATA: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: echo $DATA | base64 --decode > app/google-services.json
+
+      - name: Load GraphQL Schema File
+        env:
+          DATA1: ${{ secrets.GRAPHQL_SCHEMA_JSON_1 }}
+          DATA2: ${{ secrets.GRAPHQL_SCHEMA_JSON_2 }}
+        run: |
+          mkdir -p Submodule/sdk/src/main/assets/graphql/record360
+          echo "${DATA1}${DATA2}" | base64 --decode | gunzip > Submodule/sdk/src/main/assets/graphql/record360/schema.json
+
 
       - name: Load Gradle Properties File
         env:
