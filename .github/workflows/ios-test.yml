@@ -85,9 +85,23 @@ jobs:
           os: 'iOS'
           os_version: ${{ inputs.ios-version || '18.2' }}
         
+      - name: Update CocoaPods repo
+        run: |
+          for i in 1 2 3; do
+            pod repo update && break
+            echo "CDN attempt $i failed, retrying..."
+            if [ $i -eq 3 ]; then
+              echo "CDN unreachable, falling back to git-based trunk"
+              pod repo remove trunk || true
+              pod repo add trunk https://github.com/CocoaPods/Specs.git
+            fi
+            sleep 10
+          done
+        shell: bash
+
       - name: Install CocoaPods dependencies
         run: |
-          pod install --repo-update
+          pod install --no-repo-update
           pod update Record360SDK
         shell: bash
         
