@@ -72,6 +72,29 @@ jobs:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
           ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
 
+      # -------------------- CACHE --------------------
+      # Restore/save are split so a failed build never "poisons" the cache:
+      # save only runs once the pipeline has reached a validated, passing xcresult.
+      - name: Restore CocoaPods cache
+        id: cache-pods-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ios-app/Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('ios-app/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      - name: Restore DerivedData cache
+        id: cache-derived-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData
+          key: ${{ runner.os }}-xcode${{ inputs.xcode-version || '16.2' }}-derived-${{ hashFiles('ios-app/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-xcode${{ inputs.xcode-version || '16.2' }}-derived-
+
       # -------------------- TEST DATA --------------------
       - name: Download Test data from firebase
         if: "${{ inputs.useUrlTestData == true }}"
@@ -198,6 +221,25 @@ jobs:
             exit 1
           fi
         shell: bash
+
+      # Only save caches once we've confirmed a genuinely valid, passing xcresult —
+      # this is what prevents a broken build/test run from poisoning the cache for
+      # every subsequent run (see: cache-hit skip when the exact key already exists).
+      - name: Save CocoaPods cache
+        if: success() && steps.cache-pods-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ios-app/Pods
+          key: ${{ steps.cache-pods-restore.outputs.cache-primary-key }}
+
+      - name: Save DerivedData cache
+        if: success() && steps.cache-derived-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData
+          key: ${{ steps.cache-derived-restore.outputs.cache-primary-key }}
 
       - name: Export xcresult to Allure results
         if: success() || failure()
