@@ -39,8 +39,10 @@ env:
   PATH_TEST_SUITE: record360UITests/Resources/testRun.json
   TEST_BUNDLE: record360UITests
   XCRESULTS_VERSION: '1.13.1'
-  # TODO: replace with the real Firebase Hosting project/site id for the iOS Allure report
-  IOS_FIREBASE_PROJECT_ID: '<YOUR_IOS_FIREBASE_PROJECT_ID>'
+  IOS_FIREBASE_PROJECT_ID: ${{ secrets.IOS_FIREBASE_PROJECT_ID }}
+  # xcpretty/xcodebuild noise stripped from Execute Staging-UI / Execute custom test
+  # Staging-UI logs — kept in one place so both steps stay in sync.
+  TEST_LOG_NOISE_FILTER: '^[[:space:]]*(t = |▸ |Attributes:|Element (debug description|subtree):|Path to element:|Query chain:|Output:|→|↳|↪︎)'
 
 permissions:
   contents: read
@@ -145,18 +147,14 @@ jobs:
         run: sh ci_scripts/ci_configuration.sh
         shell: bash
 
-      - name: Install xcpretty from https://github.com/xcpretty
-        working-directory: ios-app
-        run: |
-          # Create temporary Gemfile just for xcpretty
-          echo "source 'https://rubygems.org'" > Gemfile
-          echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git', branch: 'master'" >> Gemfile
-
-          # Install using bundler
-          bundle install
-
-          # Verify version
-          bundle exec xcpretty --version
+      # xcpretty (unmaintained since ~2020) doesn't compact Xcode 26's build-system
+      # trace output at all — the raw xcodebuild verbosity leaks straight through.
+      # xcbeautify is the actively maintained replacement; ci_scripts/run-testsuite.sh
+      # and run-tests.sh (ios-app repo) must be switched to pipe through it instead
+      # of `bundle exec xcpretty` for this to take effect.
+      - name: Install xcbeautify
+        run: brew install xcbeautify
+        shell: bash
 
       # -------------------- CLEAN --------------------
       - name: Clean previous test results
@@ -193,7 +191,7 @@ jobs:
           # strip the noisy accessibility-hierarchy lines, keep the actual
           # error/summary lines. `|| true` + PIPESTATUS keeps the real exit code.
           ./ci_scripts/run-testsuite.sh --testBundle="$TEST_BUNDLE" --path="$PATH_TEST_SUITE" --deviceName="${SIMULATOR_NAME}" \
-            | grep -Ev '^[[:space:]]*(t = |Attributes:|Element (debug description|subtree):|Path to element:|Query chain:|Output:|→|↳|↪︎)' || true
+            | grep -Ev "$TEST_LOG_NOISE_FILTER" || true
           EXIT_CODE=${PIPESTATUS[0]}
           exit $EXIT_CODE
         shell: bash
@@ -204,7 +202,7 @@ jobs:
         run: |
           chmod +x ./ci_scripts/run-tests.sh
           ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests=${{ inputs.list_tests }} --deviceName="${SIMULATOR_NAME}" \
-            | grep -Ev '^[[:space:]]*(t = |Attributes:|Element (debug description|subtree):|Path to element:|Query chain:|Output:|→|↳|↪︎)' || true
+            | grep -Ev "$TEST_LOG_NOISE_FILTER" || true
           EXIT_CODE=${PIPESTATUS[0]}
           exit $EXIT_CODE
         shell: bash
