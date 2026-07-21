@@ -18,17 +18,17 @@ on:
       ios-version:
         description: 'iOS Version (e.g., 18.2)'
         required: false
-        default: '18.2'
+        default: '26.2'
         type: string
       simulator-name:
         description: 'Simulator Name'
         required: false
-        default: 'iPhone 16'
+        default: 'iPhone 17'
         type: string
       xcode-version:
         description: 'Xcode version'
         required: false
-        default: '16.2'
+        default: '26.2'
         type: string
       testing-branch:
         description: 'testing branch(e.g., master)'
@@ -85,7 +85,7 @@ jobs:
       # -------------------- XCODE & SIMULATOR --------------------
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: ${{ inputs.xcode-version || '16.2' }}
+          xcode-version: ${{ inputs.xcode-version || '26.2' }}
 
       - name: Set environment metadata
         run: |
