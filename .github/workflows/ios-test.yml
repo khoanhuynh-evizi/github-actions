@@ -112,8 +112,11 @@ jobs:
 
       - name: Set environment metadata
         run: |
-          echo "SIMULATOR_NAME=${{ inputs.simulator-name || 'iPhone 16' }}" >> $GITHUB_ENV
-          echo "IOS_VERSION=${{ inputs.ios-version || '18.2' }}" >> $GITHUB_ENV
+          # trim whitespace defensively — xcodebuild's "-destination name=..." match is an
+          # exact string compare, and a stray leading/trailing space (easy to introduce via
+          # workflow_dispatch input) makes it fail to match a device that's clearly listed.
+          echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 16' }}' | xargs)" >> $GITHUB_ENV
+          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '18.2' }}' | xargs)" >> $GITHUB_ENV
           echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
           echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
         shell: bash
@@ -124,25 +127,10 @@ jobs:
           os: 'iOS'
           os_version: ${{ inputs.ios-version || '18.2' }}
 
-      # -------------------- DEPENDENCIES --------------------
-      - name: Update CocoaPods repo
-        run: |
-          for i in 1 2 3; do
-            pod repo update && break
-            echo "CDN attempt $i failed, retrying..."
-            if [ $i -eq 3 ]; then
-              echo "CDN unreachable, falling back to git-based trunk"
-              pod repo remove trunk || true
-              pod repo add trunk https://github.com/CocoaPods/Specs.git
-            fi
-            sleep 10
-          done
-        shell: bash
-
       - name: Install CocoaPods dependencies
         working-directory: ios-app
         run: |
-          pod install --no-repo-update
+          pod install --repo-update
           pod update Record360SDK
         shell: bash
 
@@ -170,6 +158,18 @@ jobs:
         run: |
           rm -rf TestResult.xcresult allure-results allure-report
           mkdir -p allure-results
+        shell: bash
+
+      # -------------------- WARM UP SIMULATOR --------------------
+      # Guards against a race where CoreSimulator hasn't fully registered the
+      # just-booted simulator by the time ci_scripts/run-testsuite.sh resolves
+      # "-destination name=...", which fails even though the device is listed.
+      - name: Warm up simulator destination
+        working-directory: ios-app
+        run: |
+          xcrun simctl bootstatus "$SIMULATOR_NAME" -b || true
+          xcodebuild -showdestinations -workspace record360.xcworkspace -scheme record360-staging \
+            2>&1 | grep -i "$SIMULATOR_NAME" || echo "⚠️ destination chưa thấy, có thể vẫn fail ở bước sau"
         shell: bash
 
       # -------------------- RUN TESTS --------------------
