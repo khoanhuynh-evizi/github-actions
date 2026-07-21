@@ -74,29 +74,6 @@ jobs:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
           ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
 
-      # -------------------- CACHE --------------------
-      # Restore/save are split so a failed build never "poisons" the cache:
-      # save only runs once the pipeline has reached a validated, passing xcresult.
-      - name: Restore CocoaPods cache
-        id: cache-pods-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/Library/Caches/CocoaPods
-            ios-app/Pods
-          key: ${{ runner.os }}-pods-${{ hashFiles('ios-app/Podfile.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-pods-
-
-      - name: Restore DerivedData cache
-        id: cache-derived-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/Library/Developer/Xcode/DerivedData/*/Build
-          key: ${{ runner.os }}-xcode${{ inputs.xcode-version || '16.2' }}-derived-${{ hashFiles('ios-app/Podfile.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-xcode${{ inputs.xcode-version || '16.2' }}-derived-
-
       # -------------------- TEST DATA --------------------
       - name: Download Test data from firebase
         if: "${{ inputs.useUrlTestData == true }}"
@@ -164,18 +141,6 @@ jobs:
           mkdir -p allure-results
         shell: bash
 
-      # -------------------- WARM UP SIMULATOR --------------------
-      # Guards against a race where CoreSimulator hasn't fully registered the
-      # just-booted simulator by the time ci_scripts/run-testsuite.sh resolves
-      # "-destination name=...", which fails even though the device is listed.
-      - name: Warm up simulator destination
-        working-directory: ios-app
-        run: |
-          xcrun simctl bootstatus "$SIMULATOR_NAME" -b || true
-          xcodebuild -showdestinations -workspace record360.xcworkspace -scheme record360-staging \
-            2>&1 | grep -i "$SIMULATOR_NAME" || echo "⚠️ destination chưa thấy, có thể vẫn fail ở bước sau"
-        shell: bash
-
       # -------------------- RUN TESTS --------------------
       - name: Start test timer
         run: echo "TEST_START_TIME=$(date +%s)" >> $GITHUB_ENV
@@ -241,25 +206,6 @@ jobs:
           fi
           echo "✅ xcresult contains $TOTAL_COUNT test(s)"
         shell: bash
-
-      # Only save caches once we've confirmed a genuinely valid, passing xcresult —
-      # this is what prevents a broken build/test run from poisoning the cache for
-      # every subsequent run (see: cache-hit skip when the exact key already exists).
-      - name: Save CocoaPods cache
-        if: success() && steps.cache-pods-restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/Library/Caches/CocoaPods
-            ios-app/Pods
-          key: ${{ steps.cache-pods-restore.outputs.cache-primary-key }}
-
-      - name: Save DerivedData cache
-        if: success() && steps.cache-derived-restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/Library/Developer/Xcode/DerivedData/*/Build
-          key: ${{ steps.cache-derived-restore.outputs.cache-primary-key }}
 
       - name: Export xcresult to Allure results
         if: success() || failure()
