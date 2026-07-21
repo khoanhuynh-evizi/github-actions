@@ -90,7 +90,7 @@ jobs:
         id: cache-derived-restore
         uses: actions/cache/restore@v4
         with:
-          path: ~/Library/Developer/Xcode/DerivedData
+          path: ~/Library/Developer/Xcode/DerivedData/*/Build
           key: ${{ runner.os }}-xcode${{ inputs.xcode-version || '16.2' }}-derived-${{ hashFiles('ios-app/Podfile.lock') }}
           restore-keys: |
             ${{ runner.os }}-xcode${{ inputs.xcode-version || '16.2' }}-derived-
@@ -121,6 +121,14 @@ jobs:
           echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
         shell: bash
 
+      # Simulators default to "Connect Hardware Keyboard" on, which suppresses the
+      # on-screen keyboard — XCUITest's typing synthesis relies on it appearing to
+      # establish keyboard focus, so text-field taps fail with "Neither element nor
+      # any descendant has keyboard focus" without this. Must be set before boot.
+      - name: Disable simulator hardware keyboard
+        run: defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
+        shell: bash
+
       - uses: futureware-tech/simulator-action@v4
         with:
           model: ${{ inputs.simulator-name || 'iPhone 16' }}
@@ -129,9 +137,7 @@ jobs:
 
       - name: Install CocoaPods dependencies
         working-directory: ios-app
-        run: |
-          pod install --repo-update
-          pod update Record360SDK
+        run: pod update Record360SDK
         shell: bash
 
       - name: Copy Configuration plist
@@ -182,7 +188,14 @@ jobs:
         working-directory: ios-app
         run: |
           chmod +x ./ci_scripts/run-testsuite.sh
-          ./ci_scripts/run-testsuite.sh --testBundle="$TEST_BUNDLE" --path="$PATH_TEST_SUITE" --deviceName="${SIMULATOR_NAME}"
+          # xcpretty (unmaintained) doesn't parse newer Xcode's verbose
+          # "Failed to synthesize event" dumps, so it leaks through raw —
+          # strip the noisy accessibility-hierarchy lines, keep the actual
+          # error/summary lines. `|| true` + PIPESTATUS keeps the real exit code.
+          ./ci_scripts/run-testsuite.sh --testBundle="$TEST_BUNDLE" --path="$PATH_TEST_SUITE" --deviceName="${SIMULATOR_NAME}" \
+            | grep -Ev '^[[:space:]]*(t = |Attributes:|Element (debug description|subtree):|Path to element:|Query chain:|Output:|→|↳|↪︎)' || true
+          EXIT_CODE=${PIPESTATUS[0]}
+          exit $EXIT_CODE
         shell: bash
 
       - name: Execute custom test Staging-UI
@@ -190,7 +203,10 @@ jobs:
         working-directory: ios-app
         run: |
           chmod +x ./ci_scripts/run-tests.sh
-          ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests=${{ inputs.list_tests }} --deviceName="${SIMULATOR_NAME}"
+          ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests=${{ inputs.list_tests }} --deviceName="${SIMULATOR_NAME}" \
+            | grep -Ev '^[[:space:]]*(t = |Attributes:|Element (debug description|subtree):|Path to element:|Query chain:|Output:|→|↳|↪︎)' || true
+          EXIT_CODE=${PIPESTATUS[0]}
+          exit $EXIT_CODE
         shell: bash
 
       - name: Compute test duration
@@ -214,12 +230,18 @@ jobs:
             exit 1
           fi
 
-          ACTION_COUNT=$(xcrun xcresulttool get --path TestResult.xcresult --format json 2>/dev/null \
-            | jq '.actions._values | length' 2>/dev/null || echo "0")
-          if [ "$ACTION_COUNT" = "0" ]; then
-            echo "❌ xcresult is empty or corrupt"
+          # `xcresulttool get` (default "object" subcommand) is deprecated on Xcode 16+
+          # and now errors without --legacy — the old check silently swallowed that
+          # error (2>/dev/null) and always reported "0 actions", even for a fully
+          # populated xcresult. Use the current "test-results summary" API instead.
+          SUMMARY_JSON=$(xcrun xcresulttool get test-results summary --path TestResult.xcresult --compact 2>&1)
+          TOTAL_COUNT=$(echo "$SUMMARY_JSON" | jq '.totalTestCount' 2>/dev/null)
+          if [ -z "$TOTAL_COUNT" ] || [ "$TOTAL_COUNT" = "null" ] || [ "$TOTAL_COUNT" = "0" ]; then
+            echo "❌ xcresult has no recorded tests"
+            echo "$SUMMARY_JSON"
             exit 1
           fi
+          echo "✅ xcresult contains $TOTAL_COUNT test(s)"
         shell: bash
 
       # Only save caches once we've confirmed a genuinely valid, passing xcresult —
@@ -238,7 +260,7 @@ jobs:
         if: success() && steps.cache-derived-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: ~/Library/Developer/Xcode/DerivedData
+          path: ~/Library/Developer/Xcode/DerivedData/*/Build
           key: ${{ steps.cache-derived-restore.outputs.cache-primary-key }}
 
       - name: Export xcresult to Allure results
