@@ -387,14 +387,14 @@ jobs:
           cp -r ios-app/allure-report/history allure-history-branch/last-history
         shell: bash
 
-      - name: Push report history to branch
-        if: always()
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          personal_token: ${{ secrets.WDIO_ACCESS_TOKEN }}
-          external_repository: ${{ secrets.WDIO_IOS_REPOS }}
-          publish_branch: allure-history
-          publish_dir: allure-history-branch
+      # - name: Push report history to branch
+      #   if: always()
+      #   uses: peaceiris/actions-gh-pages@v4
+      #   with:
+      #     personal_token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+      #     external_repository: ${{ secrets.WDIO_IOS_REPOS }}
+      #     publish_branch: allure-history
+      #     publish_dir: allure-history-branch
 
       # -------------------- ARTIFACTS --------------------
       - name: Upload Allure HTML report
