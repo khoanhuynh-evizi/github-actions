@@ -40,7 +40,12 @@ env:
   TEST_BUNDLE: record360UITests
   XCRESULTS_VERSION: '1.13.1'
   IOS_FIREBASE_PROJECT_ID: ${{ secrets.IOS_FIREBASE_PROJECT_ID }}
+  # XCUITest runtime noise (accessibility hierarchy dumps, element subtrees, etc.)
   TEST_LOG_NOISE_FILTER: '^[[:space:]]*(t = |▸ |Attributes:|Element (debug description|subtree):|Path to element:|Query chain:|Output:|→|↳|↪︎)'
+  # Xcode 26+ build-system noise. The new explicit-modules build + expanded
+  # dependency-graph output floods the log and xcbeautify does not collapse it.
+  # This is applied on top of TEST_LOG_NOISE_FILTER (see the Execute steps).
+  BUILD_LOG_NOISE_FILTER: '^[[:space:]]*(➜|WriteAuxiliaryFile|ExecuteExternalTool|CreateBuildDirectory|RegisterExecutionPolicyException|Copy /|CpHeader|CpResource|cd /|builtin-|/bin/mkdir|write-file|-target (arm64|x86_64)|common-args\.resp|Target dependency graph|ClangStatCache|SwiftDriverJobDiscovery|SwiftExplicitDependency|Building targets in dependency order|Preparing|GatherProvisioningInputs)'
 
 permissions:
   contents: read
@@ -93,7 +98,7 @@ jobs:
           # exact string compare, and a stray leading/trailing space (easy to introduce via
           # workflow_dispatch input) makes it fail to match a device that's clearly listed.
           echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 16' }}' | xargs)" >> $GITHUB_ENV
-          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '18.2' }}' | xargs)" >> $GITHUB_ENV
+          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '26.2' }}' | xargs)" >> $GITHUB_ENV
           echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
           echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
         shell: bash
@@ -110,7 +115,7 @@ jobs:
         with:
           model: ${{ inputs.simulator-name || 'iPhone 16' }}
           os: 'iOS'
-          os_version: ${{ inputs.ios-version || '18.2' }}
+          os_version: ${{ inputs.ios-version || '26.2' }}
 
       - name: Install CocoaPods dependencies
         working-directory: ios-app
@@ -149,12 +154,14 @@ jobs:
         working-directory: ios-app
         run: |
           chmod +x ./ci_scripts/run-testsuite.sh
-          # xcpretty (unmaintained) doesn't parse newer Xcode's verbose
-          # "Failed to synthesize event" dumps, so it leaks through raw —
-          # strip the noisy accessibility-hierarchy lines, keep the actual
-          # error/summary lines. `|| true` + PIPESTATUS keeps the real exit code.
+          # Two-stage noise filter, both applied to the console only:
+          #   1. TEST_LOG_NOISE_FILTER  — XCUITest accessibility-hierarchy dumps
+          #   2. BUILD_LOG_NOISE_FILTER — Xcode 26 build-system verbosity
+          # run-testsuite.sh also writes an unfiltered full-build.log for debugging.
+          # `|| true` + PIPESTATUS[0] keeps xcodebuild's real exit code.
           ./ci_scripts/run-testsuite.sh --testBundle="$TEST_BUNDLE" --path="$PATH_TEST_SUITE" --deviceName="${SIMULATOR_NAME}" \
-            | grep -Ev "$TEST_LOG_NOISE_FILTER" || true
+            | grep -Ev "$TEST_LOG_NOISE_FILTER" \
+            | grep -Ev "$BUILD_LOG_NOISE_FILTER" || true
           EXIT_CODE=${PIPESTATUS[0]}
           exit $EXIT_CODE
         shell: bash
@@ -164,8 +171,10 @@ jobs:
         working-directory: ios-app
         run: |
           chmod +x ./ci_scripts/run-tests.sh
+          # Same two-stage console noise filter as the main Execute step above.
           ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests=${{ inputs.list_tests }} --deviceName="${SIMULATOR_NAME}" \
-            | grep -Ev "$TEST_LOG_NOISE_FILTER" || true
+            | grep -Ev "$TEST_LOG_NOISE_FILTER" \
+            | grep -Ev "$BUILD_LOG_NOISE_FILTER" || true
           EXIT_CODE=${PIPESTATUS[0]}
           exit $EXIT_CODE
         shell: bash
@@ -180,6 +189,18 @@ jobs:
           fi
           echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
         shell: bash
+
+      # Full, unfiltered xcodebuild output — only kept when something fails, so
+      # you can inspect the noisy build/test output that was stripped from the
+      # console. run-testsuite.sh / run-tests.sh write this via `tee`.
+      - name: Upload full build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-build-log
+          path: ios-app/full-build.log
+          retention-days: 7
+          if-no-files-found: ignore
 
       # -------------------- VALIDATE & CONVERT xcresult --------------------
       - name: Validate xcresult
