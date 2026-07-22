@@ -190,11 +190,42 @@ jobs:
           echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
         shell: bash
 
-      # Full, unfiltered xcodebuild output — only kept when something fails, so
-      # you can inspect the noisy build/test output that was stripped from the
-      # console. run-testsuite.sh / run-tests.sh write this via `tee`.
+      # -------------------- DEBUG: what actually happened --------------------
+      # Prints the ground-truth markers from the unfiltered log so we can tell
+      # whether the build succeeded, whether tests were even invoked, and where
+      # it stopped. Remove this step once the pipeline is healthy again.
+      - name: Diagnose build/test output
+        if: always()
+        working-directory: ios-app
+        run: |
+          echo "===== full-build.log info ====="
+          if [ ! -f full-build.log ]; then
+            echo "❌ full-build.log NOT FOUND — run-testsuite.sh did not run or did not tee. Check the script."
+            exit 0
+          fi
+          ls -lh full-build.log
+          echo
+          echo "===== tests parsed by parse_test_names.py (was xcodebuild given any tests?) ====="
+          # re-run the parser purely to show what it produced (does not affect the test run)
+          python3 ./ci_scripts/parse_test_names.py "$PATH_TEST_SUITE" "$TEST_BUNDLE" || echo "(parser returned non-zero / empty)"
+          echo
+          echo "===== build result markers ====="
+          grep -nE "error:|BUILD FAILED|BUILD SUCCEEDED|Testing failed|TEST FAILED|TEST SUCCEEDED|The test runner|Unable to find a destination|No such|Failed to|Lost connection" full-build.log | head -40 || echo "(none found)"
+          echo
+          echo "===== test invocation markers ====="
+          echo "Test Suite lines: $(grep -c 'Test Suite' full-build.log)"
+          echo "Test Case lines:  $(grep -c 'Test Case' full-build.log)"
+          grep -nE "Test Suite '|Test Case '" full-build.log | head -20 || echo "(no test cases were invoked)"
+          echo
+          echo "===== last 60 lines of the log (where it stopped) ====="
+          tail -60 full-build.log
+        shell: bash
+
+      # Full, unfiltered xcodebuild output. Temporarily set to always() while
+      # debugging so you can inspect it even on a pass; switch back to
+      # `if: failure()` once healthy.
       - name: Upload full build log
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: full-build-log
@@ -224,22 +255,151 @@ jobs:
             exit 1
           fi
           echo "✅ xcresult contains $TOTAL_COUNT test(s)"
+
+          # Source the reporting counts from Apple's native summary (reliable on
+          # Xcode 26), NOT from xcresults/allure-results which is currently broken
+          # on the new .xcresult format. These SUITE_* values feed the Google Chat
+          # card, so they must come from a source that actually works.
+          PASSED=$(echo "$SUMMARY_JSON"  | jq '.passedTests  // 0')
+          FAILED=$(echo "$SUMMARY_JSON"  | jq '.failedTests  // 0')
+          SKIPPED=$(echo "$SUMMARY_JSON" | jq '.skippedTests // 0')
+          TOTAL=$TOTAL_COUNT
+          PASS_RATE=$(awk "BEGIN{ if ($TOTAL>0) printf \"%.1f\", $PASSED*100/$TOTAL; else print 0 }")
+          {
+            echo "SUITE_PASSED=$PASSED"
+            echo "SUITE_FAILED=$FAILED"
+            echo "SUITE_SKIPPED=$SKIPPED"
+            echo "SUITE_TOTAL=$TOTAL"
+            echo "SUITE_PASS_RATE=$PASS_RATE"
+          } >> "$GITHUB_ENV"
+          echo "Reporting counts → Passed=$PASSED Failed=$FAILED Skipped=$SKIPPED Total=$TOTAL PassRate=$PASS_RATE%"
         shell: bash
 
       - name: Export xcresult to Allure results
         if: success() || failure()
         working-directory: ios-app
+        env:
+          XCRESULT_PATH: TestResult.xcresult
+          ALLURE_OUT: allure-results
         run: |
-          curl -sL "https://github.com/eroshenkoam/xcresults/releases/download/${XCRESULTS_VERSION}/xcresults" -o ./xcresults
-          chmod +x ./xcresults
-          ./xcresults export TestResult.xcresult allure-results
+          # xcresults 1.13.1 crashes (NullPointerException) on Xcode 26's new
+          # .xcresult format. Instead we convert using Apple's current, supported
+          # API (`xcrun xcresulttool get test-results tests`), inline here so no
+          # extra file is committed. It produces the same Allure 2 *-result.json
+          # files, so every downstream step (retry filter, categories, environment,
+          # history, generate, Firebase, Google Chat) keeps working unchanged.
+          mkdir -p "$ALLURE_OUT"
+          export ANCHOR_EPOCH="${TEST_START_TIME:-$(date +%s)}"
+          python3 - <<'PYEOF'
+          import hashlib, json, os, re, subprocess, sys, time, uuid
+
+          bundle = os.environ["XCRESULT_PATH"]
+          out_dir = os.environ["ALLURE_OUT"]
+          anchor = float(os.environ.get("ANCHOR_EPOCH") or time.time())
+
+          def map_status(r):
+              r = (r or "").strip().lower()
+              if r in ("passed", "expected failure"): return "passed"
+              if r == "skipped": return "skipped"
+              if r == "failed": return "failed"
+              return "broken"
+
+          _DUR = re.compile(r"(?:(\d+)\s*m)?\s*(?:([\d.,]+)\s*s)?\s*(?:([\d.,]+)\s*ms)?", re.I)
+          def dur_ms(d):
+              if d is None: return 0
+              if isinstance(d, (int, float)): return int(d * 1000)
+              s = str(d).strip()
+              if not s: return 0
+              if re.fullmatch(r"[\d.,]+", s): return int(float(s.replace(",", ".")) * 1000)
+              t = 0.0; m = _DUR.match(s)
+              if m:
+                  mm, ss, ms = m.groups()
+                  if mm: t += float(mm) * 60000
+                  if ss: t += float(ss.replace(",", ".")) * 1000
+                  if ms: t += float(ms.replace(",", "."))
+              return int(t)
+
+          FAIL = {"failure message", "failure"}
+          def fail_text(node):
+              out = []
+              def w(n):
+                  if (n.get("nodeType") or "").strip().lower() in FAIL:
+                      txt = n.get("name") or n.get("details") or ""
+                      if txt: out.append(txt)
+                  for c in n.get("children", []) or []: w(c)
+              for c in node.get("children", []) or []: w(c)
+              return "\n".join(out)
+
+          def full_name(ident, name, suite):
+              if ident:
+                  x = ident.replace("()", "").split("(")[0].replace("/", ".")
+                  return x
+              b = name.replace("()", "").split("(")[0]
+              return f"{suite}.{b}" if suite else b
+
+          raw = subprocess.run(
+              ["xcrun", "xcresulttool", "get", "test-results", "tests",
+               "--path", bundle, "--compact"],
+              capture_output=True, text=True)
+          if raw.returncode != 0:
+              sys.stderr.write("xcresulttool failed:\n" + raw.stderr + "\n"); sys.exit(2)
+          data = json.loads(raw.stdout)
+          os.makedirs(out_dir, exist_ok=True)
+
+          cursor = [int(anchor * 1000)]
+          written = [0]
+
+          def emit(node, parent_suite, suite, bundle_name):
+              name = (node.get("name") or "").replace("()", "").strip()
+              ident = node.get("nodeIdentifier") or ""
+              status = map_status(node.get("result"))
+              d = dur_ms(node.get("duration"))
+              start = cursor[0]; stop = start + d; cursor[0] = stop + 1
+              fn = full_name(ident, name, suite)
+              res = {
+                  "uuid": str(uuid.uuid4()),
+                  "historyId": hashlib.md5(fn.encode("utf-8")).hexdigest(),
+                  "name": name or fn, "fullName": fn, "status": status,
+                  "stage": "finished", "start": start, "stop": stop,
+                  "labels": [{"name": "framework", "value": "XCUITest"},
+                             {"name": "language", "value": "swift"}],
+              }
+              if parent_suite: res["labels"].append({"name": "parentSuite", "value": parent_suite})
+              if suite:
+                  res["labels"].append({"name": "suite", "value": suite})
+                  res["labels"].append({"name": "testClass", "value": suite})
+              if bundle_name: res["labels"].append({"name": "package", "value": bundle_name})
+              if status in ("failed", "broken"):
+                  tr = fail_text(node)
+                  msg = tr.splitlines()[0] if tr else "Test failed"
+                  res["statusDetails"] = {"message": msg, "trace": tr or msg}
+              with open(os.path.join(out_dir, res["uuid"] + "-result.json"), "w") as f:
+                  json.dump(res, f, ensure_ascii=False, indent=2)
+              written[0] += 1
+
+          def walk(node, ps="", su="", bn=""):
+              nt = (node.get("nodeType") or "").strip().lower()
+              nm = node.get("name") or ""
+              if nt in ("unit test bundle", "ui test bundle", "test bundle"):
+                  bn = nm; ps = nm
+              elif nt in ("test suite", "test suite group"):
+                  su = nm
+              elif nt == "test case":
+                  emit(node, ps or bn, su or bn, bn); return
+              for c in node.get("children", []) or []:
+                  walk(c, ps, su, bn)
+
+          for n in (data.get("testNodes") or data.get("children") or []):
+              walk(n)
+          print(f"Converted {written[0]} test result(s) into {out_dir}")
+          PYEOF
 
           RESULT_COUNT=$(ls allure-results/*-result.json 2>/dev/null | wc -l | tr -d ' ')
           if [ "$RESULT_COUNT" = "0" ]; then
-            echo "❌ No allure results generated"
+            echo "❌ Converter produced no Allure results"
             exit 1
           fi
-          echo "✅ Exported $RESULT_COUNT result(s)"
+          echo "✅ Converted $RESULT_COUNT result(s) via native xcresulttool"
         shell: bash
 
       # -------------------- FILTER RETRIES --------------------
@@ -291,12 +451,12 @@ jobs:
 
           print(f"Passed={passed} Failed={failed_total} Skipped={skipped} Total={total} RemovedRetries={removed}")
 
-          with open(os.environ["GITHUB_ENV"], "a") as env_file:
-              env_file.write(f"SUITE_PASSED={passed}\n")
-              env_file.write(f"SUITE_FAILED={failed_total}\n")
-              env_file.write(f"SUITE_SKIPPED={skipped}\n")
-              env_file.write(f"SUITE_TOTAL={total}\n")
-              env_file.write(f"SUITE_PASS_RATE={pass_rate}\n")
+          # NOTE: SUITE_* counts are now set from the native xcresulttool summary
+          # in the "Verify xcresult" step, which is reliable on Xcode 26. This step
+          # only dedups retry files for a clean Allure report; it must NOT write the
+          # counts anymore. Previously it did, and whenever the xcresults export
+          # failed there were no *-result.json files, so it reported 0 for
+          # everything and sent wrong numbers to Google Chat.
           PYEOF
 
       # -------------------- ALLURE HISTORY (trend) --------------------
@@ -387,14 +547,14 @@ jobs:
           cp -r ios-app/allure-report/history allure-history-branch/last-history
         shell: bash
 
-      # - name: Push report history to branch
-      #   if: always()
-      #   uses: peaceiris/actions-gh-pages@v4
-      #   with:
-      #     personal_token: ${{ secrets.WDIO_ACCESS_TOKEN }}
-      #     external_repository: ${{ secrets.WDIO_IOS_REPOS }}
-      #     publish_branch: allure-history
-      #     publish_dir: allure-history-branch
+      - name: Push report history to branch
+        if: always()
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+          external_repository: ${{ secrets.WDIO_IOS_REPOS }}
+          publish_branch: allure-history
+          publish_dir: allure-history-branch
 
       # -------------------- ARTIFACTS --------------------
       - name: Upload Allure HTML report
