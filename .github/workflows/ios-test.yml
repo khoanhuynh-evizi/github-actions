@@ -188,7 +188,6 @@ jobs:
           echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
         shell: bash
 
-
       # -------------------- VALIDATE & CONVERT xcresult --------------------
       - name: Validate xcresult
         if: success() || failure()
@@ -258,59 +257,21 @@ jobs:
         if: always()
         working-directory: ios-app
         run: |
-          npm install -g allure-commandline >/dev/null 2>&1 || true
-          # Full-featured Allure 3 config. Everything that used to be separate
-          # files/steps in Allure 2 (categories.json, environment.properties,
-          # trend trimming) now lives here. Executor/CI info is auto-detected.
-          cat > allurerc.mjs <<'JS'
-          import { defineConfig } from "allure";
+          # Install Allure 3 — package name is 'allure', NOT 'allure-commandline' (that is v2).
+          # Allure 3 has a built-in xcresult reader via xcresulttool (already on macOS runners).
+          npm install -g allure@latest >/dev/null 2>&1 || true
+          allure --version
 
-          const v = (k) => process.env[k] || "";
-
-          export default defineConfig({
-            name: "Record360 iOS UI Tests",
-            output: "./allure-report",
-            historyPath: "./history.jsonl",
-            appendHistory: true,
-            historyLimit: 10, // keep last 10 runs in the trend (replaces Trim step)
-            variables: {
-              "Platform": "iOS",
-              "OS Version": v("IOS_VERSION"),
-              "Device": v("SIMULATOR_NAME"),
-              "Xcode Version": v("XCODE_VERSION"),
-              "macOS Version": v("MACOS_VERSION"),
-              "Test Bundle": v("TEST_BUNDLE"),
-            },
-            categories: {
-              rules: [
-                { name: "Product Bugs", matchers: { statuses: ["failed"], trace: /XCTAssert/ } },
-                { name: "Test Bugs",    matchers: { statuses: ["broken"] } },
-                { name: "Skipped",      matchers: { statuses: ["skipped"] } },
-              ],
-            },
-            plugins: {
-              awesome: {
-                options: {
-                  reportName: "Record360 iOS UI Tests",
-                  singleFile: false,
-                  reportLanguage: "en",
-                },
-              },
-              dashboard: {
-                options: {
-                  reportName: "Record360 iOS — Dashboard",
-                  reportLanguage: "en",
-                },
-              },
-            },
-          });
-          JS
-          allure --version 2>/dev/null || npx --yes allure --version || true
           echo "Generating Allure 3 report from TestResult.xcresult ..."
-          allure generate TestResult.xcresult 2>/dev/null \
-            || npx --yes allure generate TestResult.xcresult
+          # Allure 3 reads .xcresult directly — no conversion step needed.
+          # All report metadata is passed as CLI flags; no allurerc.mjs required.
+          allure generate TestResult.xcresult \
+            --output ./allure-report \
+            --name "Record360 iOS UI Tests" \
+            --history-path ./history.jsonl \
+            --history-limit 10
           echo "---- generated report tree ----"
-          find allure-report -maxdepth 2 -name index.html || true
+          find allure-report -maxdepth 2 -name "*.html" | head -20 || true
         shell: bash
 
       - name: Save Allure history for next run
@@ -346,16 +307,14 @@ jobs:
         run: |
           mkdir -p deploy
           if [ ! -d ios-app/allure-report ] || [ -z "$(ls -A ios-app/allure-report 2>/dev/null)" ]; then
-            echo "⚠️ allure-report is empty or missing — skipping deploy folder prep"
-            echo "<h1>Report generation failed</h1>" > deploy/index.html
-          elif [ -f ios-app/allure-report/awesome/index.html ]; then
-            cp -r ios-app/allure-report/awesome/* deploy/
-          else
+            echo "⚠️ allure-report is empty or missing — deploying placeholder page"
+            echo "<h1>Allure report generation failed</h1>" > deploy/index.html
+          elif [ -f ios-app/allure-report/index.html ]; then
+            # Allure 3 generates a flat report with index.html at root
             cp -r ios-app/allure-report/* deploy/
-          fi
-          if [ -d ios-app/allure-report/dashboard ]; then
-            mkdir -p deploy/dashboard
-            cp -r ios-app/allure-report/dashboard/* deploy/dashboard/
+          else
+            echo "⚠️ No index.html found in allure-report — deploying placeholder page"
+            echo "<h1>Allure report generation failed</h1>" > deploy/index.html
           fi
 
       - name: Create firebase config
