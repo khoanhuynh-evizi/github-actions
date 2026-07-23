@@ -8,10 +8,6 @@ on:
         required: true
         default: 'macos-latest'
         type: string
-      useUrlTestData:
-        description: Enable download testdata from url
-        type: boolean
-        required: false
       list_tests:
         description: Input subset of tests for testing
         required: false
@@ -38,7 +34,6 @@ on:
 env:
   PATH_TEST_SUITE: record360UITests/Resources/testRun.json
   TEST_BUNDLE: record360UITests
-  XCRESULTS_VERSION: '1.13.1'
   IOS_FIREBASE_PROJECT_ID: ${{ secrets.IOS_FIREBASE_PROJECT_ID }}
   # XCUITest runtime noise (accessibility hierarchy dumps, element subtrees, etc.)
   TEST_LOG_NOISE_FILTER: '^[[:space:]]*(t = |▸ |Attributes:|Element (debug description|subtree):|Path to element:|Query chain:|Output:|→|↳|↪︎)'
@@ -77,16 +72,6 @@ jobs:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
           ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
 
-      # -------------------- TEST DATA --------------------
-      - name: Download Test data from firebase
-        if: "${{ inputs.useUrlTestData == true }}"
-        working-directory: ios-app
-        run: |
-          echo "${{ secrets.FIREBASE_SDK_KEY }}" > record360UITests/Firebase/firebase-sdk-key.json
-          cd record360UITests/Firebase
-          npm install
-          node firebase.js
-
       # -------------------- XCODE & SIMULATOR --------------------
       - uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -97,7 +82,7 @@ jobs:
           # trim whitespace defensively — xcodebuild's "-destination name=..." match is an
           # exact string compare, and a stray leading/trailing space (easy to introduce via
           # workflow_dispatch input) makes it fail to match a device that's clearly listed.
-          echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 16' }}' | xargs)" >> $GITHUB_ENV
+          echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 17' }}' | xargs)" >> $GITHUB_ENV
           echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '26.2' }}' | xargs)" >> $GITHUB_ENV
           echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
           echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
@@ -113,7 +98,7 @@ jobs:
 
       - uses: futureware-tech/simulator-action@v4
         with:
-          model: ${{ inputs.simulator-name || 'iPhone 16' }}
+          model: ${{ inputs.simulator-name || 'iPhone 17' }}
           os: 'iOS'
           os_version: ${{ inputs.ios-version || '26.2' }}
 
@@ -140,8 +125,8 @@ jobs:
       - name: Clean previous test results
         working-directory: ios-app
         run: |
-          rm -rf TestResult.xcresult allure-results allure-report
-          mkdir -p allure-results
+          # Allure 3 reads the .xcresult directly — no allure-results dir needed.
+          rm -rf TestResult.xcresult allure-report history.jsonl allurerc.mjs
         shell: bash
 
       # -------------------- RUN TESTS --------------------
@@ -203,42 +188,9 @@ jobs:
           echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
         shell: bash
 
-      # -------------------- DEBUG: what actually happened --------------------
-      # Prints the ground-truth markers from the unfiltered log so we can tell
-      # whether the build succeeded, whether tests were even invoked, and where
-      # it stopped. Remove this step once the pipeline is healthy again.
-      - name: Diagnose build/test output
-        if: always()
-        working-directory: ios-app
-        run: |
-          echo "===== full-build.log info ====="
-          if [ ! -f full-build.log ]; then
-            echo "❌ full-build.log NOT FOUND — run-testsuite.sh did not run or did not tee. Check the script."
-            exit 0
-          fi
-          ls -lh full-build.log
-          echo
-          echo "===== tests parsed by parse_test_names.py (was xcodebuild given any tests?) ====="
-          # re-run the parser purely to show what it produced (does not affect the test run)
-          python3 ./ci_scripts/parse_test_names.py "$PATH_TEST_SUITE" "$TEST_BUNDLE" || echo "(parser returned non-zero / empty)"
-          echo
-          echo "===== build result markers ====="
-          grep -nE "error:|BUILD FAILED|BUILD SUCCEEDED|Testing failed|TEST FAILED|TEST SUCCEEDED|The test runner|Unable to find a destination|No such|Failed to|Lost connection" full-build.log | head -40 || echo "(none found)"
-          echo
-          echo "===== test invocation markers ====="
-          echo "Test Suite lines: $(grep -c 'Test Suite' full-build.log)"
-          echo "Test Case lines:  $(grep -c 'Test Case' full-build.log)"
-          grep -nE "Test Suite '|Test Case '" full-build.log | head -20 || echo "(no test cases were invoked)"
-          echo
-          echo "===== last 60 lines of the log (where it stopped) ====="
-          tail -60 full-build.log
-        shell: bash
-
-      # Full, unfiltered xcodebuild output. Temporarily set to always() while
-      # debugging so you can inspect it even on a pass; switch back to
-      # `if: failure()` once healthy.
+      # Full, unfiltered xcodebuild output — kept only on failure for debugging.
       - name: Upload full build log
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: full-build-log
@@ -288,253 +240,9 @@ jobs:
           echo "Reporting counts → Passed=$PASSED Failed=$FAILED Skipped=$SKIPPED Total=$TOTAL PassRate=$PASS_RATE%"
         shell: bash
 
-      # -------------------- TEMP DEBUG (remove once mapping is confirmed) ------
-      # Dumps the raw failure-node structure that xcresulttool records for each
-      # failed test, so we can see exactly what text/fields Apple stores and tune
-      # the converter's failure-message selection. Runs only when tests failed.
-      - name: DEBUG dump failure nodes
-        if: failure()
-        working-directory: ios-app
-        run: |
-          python3 - <<'PYEOF'
-          import json, subprocess, sys
-
-          def xc(*args):
-              return subprocess.run(
-                  ["xcrun", "xcresulttool", "get", "test-results", *args,
-                   "--path", "TestResult.xcresult", "--compact"],
-                  capture_output=True, text=True)
-
-          tests = xc("tests")
-          if tests.returncode != 0:
-              sys.stderr.write(tests.stderr); sys.exit(0)
-          data = json.loads(tests.stdout)
-
-          cases = []
-          def walk(n):
-              lo = (n.get("nodeType") or "").strip().lower()
-              if lo == "test case":
-                  cases.append((n.get("nodeIdentifier") or n.get("name"), n.get("result")))
-              for c in n.get("children", []) or []:
-                  walk(c)
-          for n in (data.get("testNodes") or []):
-              walk(n)
-
-          print("===== TEST CASES (id :: result) =====")
-          for cid, res in cases:
-              print(f"  {res}  ::  {cid}")
-
-          failed = [c for c in cases if (c[1] or "").lower() == "failed"]
-          target = failed[0][0] if failed else (cases[0][0] if cases else None)
-
-          print(f"\n===== ACTIVITIES (raw schema) for: {target} =====")
-          if target:
-              act = xc("activities", "--test-id", target)
-              if act.returncode == 0:
-                  # pretty-print first ~7000 chars so we can read the field names
-                  try:
-                      print(json.dumps(json.loads(act.stdout), indent=2, ensure_ascii=False)[:7000])
-                  except Exception:
-                      print(act.stdout[:7000])
-              else:
-                  print("`activities` failed:", act.stderr[:400])
-                  det = xc("test-details", "--test-id", target)
-                  print("\n===== TEST-DETAILS fallback =====")
-                  print(det.stdout[:7000] if det.returncode == 0 else det.stderr[:400])
-          PYEOF
-        shell: bash
-
-      - name: Export xcresult to Allure results
-        if: success() || failure()
-        working-directory: ios-app
-        env:
-          XCRESULT_PATH: TestResult.xcresult
-          ALLURE_OUT: allure-results
-        run: |
-          # xcresults 1.13.1 crashes (NullPointerException) on Xcode 26's new
-          # .xcresult format. Instead we convert using Apple's current, supported
-          # API (`xcrun xcresulttool get test-results tests`), inline here so no
-          # extra file is committed. It produces the same Allure 2 *-result.json
-          # files, so every downstream step (retry filter, categories, environment,
-          # history, generate, Firebase, Google Chat) keeps working unchanged.
-          mkdir -p "$ALLURE_OUT"
-          export ANCHOR_EPOCH="${TEST_START_TIME:-$(date +%s)}"
-          python3 - <<'PYEOF'
-          import hashlib, json, os, re, subprocess, sys, time, uuid
-
-          bundle = os.environ["XCRESULT_PATH"]
-          out_dir = os.environ["ALLURE_OUT"]
-          anchor = float(os.environ.get("ANCHOR_EPOCH") or time.time())
-
-          def map_status(r):
-              r = (r or "").strip().lower()
-              if r in ("passed", "expected failure"): return "passed"
-              if r == "skipped": return "skipped"
-              if r == "failed": return "failed"
-              return "broken"
-
-          _DUR = re.compile(r"(?:(\d+)\s*m)?\s*(?:([\d.,]+)\s*s)?\s*(?:([\d.,]+)\s*ms)?", re.I)
-          def dur_ms(d):
-              if d is None: return 0
-              if isinstance(d, (int, float)): return int(d * 1000)
-              s = str(d).strip()
-              if not s: return 0
-              if re.fullmatch(r"[\d.,]+", s): return int(float(s.replace(",", ".")) * 1000)
-              t = 0.0; m = _DUR.match(s)
-              if m:
-                  mm, ss, ms = m.groups()
-                  if mm: t += float(mm) * 60000
-                  if ss: t += float(ss.replace(",", ".")) * 1000
-                  if ms: t += float(ms.replace(",", "."))
-              return int(t)
-
-          FAIL = {"failure message", "failure"}
-          def fail_text(node):
-              out = []
-              def w(n):
-                  if (n.get("nodeType") or "").strip().lower() in FAIL:
-                      txt = n.get("name") or n.get("details") or ""
-                      if txt: out.append(txt)
-                  for c in n.get("children", []) or []: w(c)
-              for c in node.get("children", []) or []: w(c)
-              return "\n".join(out)
-
-          def full_name(ident, name, suite):
-              if ident:
-                  x = ident.replace("()", "").split("(")[0].replace("/", ".")
-                  return x
-              b = name.replace("()", "").split("(")[0]
-              return f"{suite}.{b}" if suite else b
-
-          raw = subprocess.run(
-              ["xcrun", "xcresulttool", "get", "test-results", "tests",
-               "--path", bundle, "--compact"],
-              capture_output=True, text=True)
-          if raw.returncode != 0:
-              sys.stderr.write("xcresulttool failed:\n" + raw.stderr + "\n"); sys.exit(2)
-          data = json.loads(raw.stdout)
-          os.makedirs(out_dir, exist_ok=True)
-
-          cursor = [int(anchor * 1000)]
-          written = [0]
-
-          def emit(node, parent_suite, suite, bundle_name):
-              name = (node.get("name") or "").replace("()", "").strip()
-              ident = node.get("nodeIdentifier") or ""
-              status = map_status(node.get("result"))
-              d = node.get("durationInSeconds")
-              d = int(float(d) * 1000) if d is not None else dur_ms(node.get("duration"))
-              start = cursor[0]; stop = start + d; cursor[0] = stop + 1
-              fn = full_name(ident, name, suite)
-              res = {
-                  "uuid": str(uuid.uuid4()),
-                  "historyId": hashlib.md5(fn.encode("utf-8")).hexdigest(),
-                  "name": name or fn, "fullName": fn, "status": status,
-                  "stage": "finished", "start": start, "stop": stop,
-                  "labels": [{"name": "framework", "value": "XCUITest"},
-                             {"name": "language", "value": "swift"}],
-              }
-              # Flat layout: put every test case directly under the bundle
-              # (e.g. record360UITests) in the Suites tab, NOT nested inside a
-              # per-class sub-suite. So the top-level suite is the bundle name;
-              # the class is kept only as a testClass label (does not nest).
-              top = bundle_name or parent_suite or suite
-              if top:
-                  res["labels"].append({"name": "suite", "value": top})
-              if suite and suite != top:
-                  res["labels"].append({"name": "testClass", "value": suite})
-              if bundle_name: res["labels"].append({"name": "package", "value": bundle_name})
-              if status in ("failed", "broken"):
-                  tr = fail_text(node)
-                  msg = tr.splitlines()[0] if tr else "Test failed"
-                  res["statusDetails"] = {"message": msg, "trace": tr or msg}
-              with open(os.path.join(out_dir, res["uuid"] + "-result.json"), "w") as f:
-                  json.dump(res, f, ensure_ascii=False, indent=2)
-              written[0] += 1
-
-          def walk(node, ps="", su="", bn=""):
-              nt = (node.get("nodeType") or "").strip().lower()
-              nm = node.get("name") or ""
-              if nt in ("unit test bundle", "ui test bundle", "test bundle"):
-                  bn = nm; ps = nm
-              elif nt in ("test suite", "test suite group"):
-                  su = nm
-              elif nt == "test case":
-                  emit(node, ps or bn, su or bn, bn); return
-              for c in node.get("children", []) or []:
-                  walk(c, ps, su, bn)
-
-          for n in (data.get("testNodes") or data.get("children") or []):
-              walk(n)
-          print(f"Converted {written[0]} test result(s) into {out_dir}")
-          PYEOF
-
-          RESULT_COUNT=$(ls allure-results/*-result.json 2>/dev/null | wc -l | tr -d ' ')
-          if [ "$RESULT_COUNT" = "0" ]; then
-            echo "❌ Converter produced no Allure results"
-            exit 1
-          fi
-          echo "✅ Converted $RESULT_COUNT result(s) via native xcresulttool"
-        shell: bash
-
-      # -------------------- FILTER RETRIES --------------------
-      - name: Filter retry results
-        if: success() || failure()
-        working-directory: ios-app
-        shell: bash
-        run: |
-          python3 - <<'PYEOF'
-          import json, os, glob
-          from collections import defaultdict
-
-          results_dir = "allure-results"
-          files = glob.glob(f"{results_dir}/*-result.json")
-
-          history_map = defaultdict(list)
-          for f in files:
-              try:
-                  with open(f) as fp:
-                      data = json.load(fp)
-                  history_map[data.get("historyId", f)].append((data.get("start", 0), f, data))
-              except Exception as e:
-                  print(f"Error reading {f}: {e}")
-
-          passed = failed = skipped = broken = removed = 0
-
-          for hid, entries in history_map.items():
-              entries.sort(key=lambda x: x[0], reverse=True)
-              _, keep_file, keep_data = entries[0]
-              status = keep_data.get("status", "")
-              if status == "passed":
-                  passed += 1
-              elif status == "failed":
-                  failed += 1
-              elif status == "skipped":
-                  skipped += 1
-              elif status == "broken":
-                  broken += 1
-
-              for _, filepath, _ in entries[1:]:
-                  os.remove(filepath)
-                  print(f"Removed retry: {os.path.basename(filepath)}")
-                  removed += 1
-
-          total = passed + failed + skipped + broken
-          # broken (crashed/errored) counts as a failure for reporting purposes
-          failed_total = failed + broken
-          pass_rate = round(passed * 100 / total, 1) if total > 0 else 0
-
-          print(f"Passed={passed} Failed={failed_total} Skipped={skipped} Total={total} RemovedRetries={removed}")
-
-          # NOTE: SUITE_* counts are now set from the native xcresulttool summary
-          # in the "Verify xcresult" step, which is reliable on Xcode 26. This step
-          # only dedups retry files for a clean Allure report; it must NOT write the
-          # counts anymore. Previously it did, and whenever the xcresults export
-          # failed there were no *-result.json files, so it reported 0 for
-          # everything and sent wrong numbers to Google Chat.
-          PYEOF
-
-      # -------------------- ALLURE HISTORY (trend) --------------------
+      # -------------------- ALLURE 3 HISTORY (trend persistence) --------------------
+      # Allure 3 stores history as a single JSONL file (was a whole dir in Allure 2).
+      # We persist it across runs in the `allure-history` branch, same as before.
       - name: Get Allure history
         if: always()
         uses: actions/checkout@v4
@@ -545,85 +253,87 @@ jobs:
           ref: allure-history
           path: report-history
 
-      - name: Copy previous Allure history (for trend graphs)
+      - name: Restore Allure history file
         if: always()
         run: |
-          mkdir -p ios-app/allure-results/history
-          cp -r report-history/last-history/. ios-app/allure-results/history 2>/dev/null || true
+          # Bring the previous run's history.jsonl in so the new report continues
+          # the trend. First run (empty branch) just starts fresh.
+          cp report-history/history.jsonl ios-app/history.jsonl 2>/dev/null \
+            || echo "No previous history.jsonl (first run?) — starting fresh."
         shell: bash
 
-      # -------------------- ALLURE METADATA --------------------
-      - name: Create Allure categories
+      # -------------------- GENERATE ALLURE 3 REPORT --------------------
+      - name: Generate Allure 3 report
         if: always()
         working-directory: ios-app
         run: |
-          cat > allure-results/categories.json << 'EOF'
-          [
-            { "name": "Product Bugs", "matchedStatuses": ["failed"], "traceRegex": ".*XCTAssert.*" },
-            { "name": "Test Bugs",    "matchedStatuses": ["broken"] },
-            { "name": "Skipped",      "matchedStatuses": ["skipped"] }
-          ]
-          EOF
+          npm install -g allure >/dev/null 2>&1 || true
+          # Full-featured Allure 3 config. Everything that used to be separate
+          # files/steps in Allure 2 (categories.json, environment.properties,
+          # trend trimming) now lives here. Executor/CI info is auto-detected.
+          cat > allurerc.mjs <<'JS'
+          import { defineConfig } from "allure";
+
+          const v = (k) => process.env[k] || "";
+
+          export default defineConfig({
+            name: "Record360 iOS UI Tests",
+            output: "./allure-report",
+            historyPath: "./history.jsonl",
+            appendHistory: true,
+            historyLimit: 10, // keep last 10 runs in the trend (replaces Trim step)
+            variables: {
+              "Platform": "iOS",
+              "OS Version": v("IOS_VERSION"),
+              "Device": v("SIMULATOR_NAME"),
+              "Xcode Version": v("XCODE_VERSION"),
+              "macOS Version": v("MACOS_VERSION"),
+              "Test Bundle": v("TEST_BUNDLE"),
+            },
+            categories: {
+              rules: [
+                { name: "Product Bugs", matchers: { statuses: ["failed"], trace: /XCTAssert/ } },
+                { name: "Test Bugs",    matchers: { statuses: ["broken"] } },
+                { name: "Skipped",      matchers: { statuses: ["skipped"] } },
+              ],
+            },
+            plugins: {
+              awesome: {
+                options: {
+                  reportName: "Record360 iOS UI Tests",
+                  singleFile: false,
+                  reportLanguage: "en",
+                },
+              },
+              dashboard: {
+                options: {
+                  reportName: "Record360 iOS — Dashboard",
+                  reportLanguage: "en",
+                },
+              },
+            },
+          });
+          JS
+          allure --version 2>/dev/null || npx --yes allure --version || true
+          echo "Generating Allure 3 report from TestResult.xcresult ..."
+          allure generate TestResult.xcresult 2>/dev/null \
+            || npx --yes allure generate TestResult.xcresult
+          echo "---- generated report tree ----"
+          find allure-report -maxdepth 2 -name index.html || true
         shell: bash
 
-      - name: Create Allure environment.properties
-        if: always()
-        working-directory: ios-app
-        run: |
-          cat > allure-results/environment.properties << EOF
-          Platform=iOS
-          OS.Version=${IOS_VERSION}
-          Device=${SIMULATOR_NAME}
-          Xcode.Version=${XCODE_VERSION}
-          macOS.Version=${MACOS_VERSION}
-          Test.Bundle=${TEST_BUNDLE}
-          Build.Time=$(date '+%Y-%m-%d %H:%M:%S')
-          EOF
-        shell: bash
-
-      - name: Create Allure executor.json
-        if: always()
-        working-directory: ios-app
-        run: |
-          cat > allure-results/executor.json << EOF
-          {
-            "name": "GitHub Actions",
-            "type": "github",
-            "buildName": "Run #${{ github.run_number }}",
-            "buildOrder": ${{ github.run_number }},
-            "buildUrl": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-            "reportName": "iOS UI Tests - Run #${{ github.run_number }}"
-          }
-          EOF
-        shell: bash
-
-      # -------------------- GENERATE REPORT --------------------
-      - name: Generate Allure Report
-        if: always()
-        working-directory: ios-app
-        run: npx --yes allure-commandline@2.37.0 generate allure-results --clean -o allure-report
-        shell: bash
-
-      - name: Trim trend history
-        if: always()
-        working-directory: ios-app
-        run: |
-          for trend_file in allure-report/history/*-trend.json; do
-            [ -f "$trend_file" ] || continue
-            trimmed=$(jq 'if length > 10 then .[-10:] else . end' "$trend_file" 2>/dev/null)
-            [ -n "$trimmed" ] && echo "$trimmed" > "$trend_file"
-          done
-        shell: bash
-
-      - name: Save history for next run
+      - name: Save Allure history for next run
         if: always()
         run: |
           mkdir -p allure-history-branch
-          cp -r ios-app/allure-report/history allure-history-branch/last-history
+          # Allure 3 appended this run to ios-app/history.jsonl during generate.
+          cp ios-app/history.jsonl allure-history-branch/history.jsonl 2>/dev/null \
+            || echo "No history.jsonl produced — skipping save."
         shell: bash
 
       - name: Push report history to branch
         if: always()
+        continue-on-error: true
         uses: peaceiris/actions-gh-pages@v4
         with:
           personal_token: ${{ secrets.WDIO_ACCESS_TOKEN }}
@@ -640,70 +350,21 @@ jobs:
           path: ios-app/allure-report/
           retention-days: 7
 
-      - name: Upload Allure raw results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: allure-results
-          path: ios-app/allure-results/
-          retention-days: 7
-
-      - name: Upload xcresult
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: TestResult-xcresult
-          path: ios-app/TestResult.xcresult
-          retention-days: 7
-
-      # ============================================================
-      # ALLURE 3 TRIAL (side-by-side comparison, safe to keep or delete)
-      # These steps generate a SECOND report using Allure 3, which reads the
-      # .xcresult directly (native test body: steps, sub-steps, attachments).
-      # They are continue-on-error and never touch the Allure 2 pipeline, the
-      # Firebase deploy, or the Google Chat counts (which come from the native
-      # xcresulttool summary). Compare the "allure3-trial-report" artifact with
-      # the normal report, then decide whether to migrate. Delete this whole
-      # block if you stay on Allure 2.
-      # ============================================================
-      - name: "Allure 3 trial — generate report"
-        if: always()
-        continue-on-error: true
-        working-directory: ios-app
-        run: |
-          echo "Node: $(node --version 2>/dev/null || echo 'not found')"
-          # Allure 3 ships on npm as the 'allure' package. Try a global install,
-          # fall back to npx. Allure 3 reads the xcresult bundle directly and
-          # requires a full Xcode install (present on this runner).
-          npm install -g allure >/dev/null 2>&1 || true
-          GEN() { allure "$@" 2>/dev/null || npx --yes allure "$@"; }
-          allure --version 2>/dev/null || npx --yes allure --version || true
-          echo "Generating Allure 3 report from TestResult.xcresult ..."
-          GEN generate TestResult.xcresult --clean --output allure3-report \
-            || GEN generate TestResult.xcresult -o allure3-report \
-            || echo "⚠️ Allure 3 generate failed — check the command/flags for this Allure 3 version above."
-          echo "---- allure3-report contents ----"
-          ls -la allure3-report 2>/dev/null || echo "(no report produced)"
-        shell: bash
-
-      - name: "Allure 3 trial — upload report"
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: allure3-trial-report
-          path: ios-app/allure3-report
-          retention-days: 7
-          if-no-files-found: ignore
-
-      # -------------------- DEPLOY REPORT --------------------
-      # See .github/workflows/smoke-test-manual.yml for the web equivalent
-      # (Firebase project "record360-report").
       - name: Prepare deploy folder
         if: always()
         run: |
           mkdir -p deploy
-          cp -r ios-app/allure-report/* deploy/
+          # Allure 3 nests each plugin's report in its own subdir. Serve the
+          # awesome report at the site root, and the charts dashboard at /dashboard.
+          if [ -f ios-app/allure-report/awesome/index.html ]; then
+            cp -r ios-app/allure-report/awesome/* deploy/
+          else
+            cp -r ios-app/allure-report/* deploy/   # fallback: whatever was produced
+          fi
+          if [ -d ios-app/allure-report/dashboard ]; then
+            mkdir -p deploy/dashboard
+            cp -r ios-app/allure-report/dashboard/* deploy/dashboard/
+          fi
 
       - name: Create firebase config
         if: always()
