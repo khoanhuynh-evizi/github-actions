@@ -263,13 +263,15 @@ jobs:
           allure --version
 
           echo "Generating Allure 3 report from TestResult.xcresult ..."
-          # Allure 3 reads .xcresult directly — no conversion step needed.
-          # All report metadata is passed as CLI flags; no allurerc.mjs required.
-          allure generate TestResult.xcresult \
+          # Use `allure awesome` — the correct Allure 3 command that:
+          #   - accepts a positional results directory (including .xcresult bundles)
+          #   - supports --history-path for trend persistence
+          #   - generates the Awesome UI report with full test details
+          allure awesome TestResult.xcresult \
             --output ./allure-report \
             --name "Record360 iOS UI Tests" \
             --history-path ./history.jsonl \
-            --history-limit 10
+            --lang en
           echo "---- generated report tree ----"
           find allure-report -maxdepth 2 -name "*.html" | head -20 || true
         shell: bash
