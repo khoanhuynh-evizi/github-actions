@@ -158,11 +158,19 @@ jobs:
           #   1. TEST_LOG_NOISE_FILTER  — XCUITest accessibility-hierarchy dumps
           #   2. BUILD_LOG_NOISE_FILTER — Xcode 26 build-system verbosity
           # run-testsuite.sh also writes an unfiltered full-build.log for debugging.
-          # `|| true` + PIPESTATUS[0] keeps xcodebuild's real exit code.
+          #
+          # IMPORTANT: do NOT use `... || true` here. `|| true` runs `true` when
+          # the pipeline fails, which OVERWRITES $PIPESTATUS with true's [0], so a
+          # failing test run would report exit 0 and the step would stay green.
+          # Instead disable -e only around the pipeline, capture the real
+          # xcodebuild exit code from PIPESTATUS[0], then restore -e.
+          set +e
           ./ci_scripts/run-testsuite.sh --testBundle="$TEST_BUNDLE" --path="$PATH_TEST_SUITE" --deviceName="${SIMULATOR_NAME}" \
             | grep -Ev "$TEST_LOG_NOISE_FILTER" \
-            | grep -Ev "$BUILD_LOG_NOISE_FILTER" || true
+            | grep -Ev "$BUILD_LOG_NOISE_FILTER"
           EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          echo "run-testsuite.sh exit code: $EXIT_CODE"
           exit $EXIT_CODE
         shell: bash
 
@@ -172,10 +180,15 @@ jobs:
         run: |
           chmod +x ./ci_scripts/run-tests.sh
           # Same two-stage console noise filter as the main Execute step above.
+          # See that step for why `|| true` must not be used (it would swallow the
+          # real exit code and keep the step green on test failures).
+          set +e
           ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests=${{ inputs.list_tests }} --deviceName="${SIMULATOR_NAME}" \
             | grep -Ev "$TEST_LOG_NOISE_FILTER" \
-            | grep -Ev "$BUILD_LOG_NOISE_FILTER" || true
+            | grep -Ev "$BUILD_LOG_NOISE_FILTER"
           EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+          echo "run-tests.sh exit code: $EXIT_CODE"
           exit $EXIT_CODE
         shell: bash
 
@@ -275,6 +288,45 @@ jobs:
           echo "Reporting counts → Passed=$PASSED Failed=$FAILED Skipped=$SKIPPED Total=$TOTAL PassRate=$PASS_RATE%"
         shell: bash
 
+      # -------------------- TEMP DEBUG (remove once mapping is confirmed) ------
+      # Dumps the raw failure-node structure that xcresulttool records for each
+      # failed test, so we can see exactly what text/fields Apple stores and tune
+      # the converter's failure-message selection. Runs only when tests failed.
+      - name: DEBUG dump failure nodes
+        if: failure()
+        working-directory: ios-app
+        run: |
+          echo "===== test-results tests (compact) — failure-related nodes only ====="
+          python3 - <<'PYEOF'
+          import json, subprocess, sys
+          raw = subprocess.run(
+              ["xcrun", "xcresulttool", "get", "test-results", "tests",
+               "--path", "TestResult.xcresult", "--compact"],
+              capture_output=True, text=True)
+          if raw.returncode != 0:
+              sys.stderr.write(raw.stderr); sys.exit(0)
+          data = json.loads(raw.stdout)
+
+          def walk(n, depth=0):
+              nt = (n.get("nodeType") or "").strip()
+              nm = n.get("name") or ""
+              res = n.get("result") or ""
+              lo = nt.lower()
+              is_case = lo == "test case"
+              if is_case or ("failure" in lo) or ("issue" in lo):
+                  pad = "  " * depth
+                  extra = f" [result={res}]" if res else ""
+                  # print all keys so we can see where the message text lives
+                  keys = ",".join(k for k in n.keys() if k not in ("children",))
+                  print(f"{pad}<{nt}>{extra} :: {nm}   (keys: {keys})")
+              for c in n.get("children", []) or []:
+                  walk(c, depth + 1)
+
+          for n in (data.get("testNodes") or data.get("children") or []):
+              walk(n)
+          PYEOF
+        shell: bash
+
       - name: Export xcresult to Allure results
         if: success() || failure()
         working-directory: ios-app
@@ -364,9 +416,14 @@ jobs:
                   "labels": [{"name": "framework", "value": "XCUITest"},
                              {"name": "language", "value": "swift"}],
               }
-              if parent_suite: res["labels"].append({"name": "parentSuite", "value": parent_suite})
-              if suite:
-                  res["labels"].append({"name": "suite", "value": suite})
+              # Flat layout: put every test case directly under the bundle
+              # (e.g. record360UITests) in the Suites tab, NOT nested inside a
+              # per-class sub-suite. So the top-level suite is the bundle name;
+              # the class is kept only as a testClass label (does not nest).
+              top = bundle_name or parent_suite or suite
+              if top:
+                  res["labels"].append({"name": "suite", "value": top})
+              if suite and suite != top:
                   res["labels"].append({"name": "testClass", "value": suite})
               if bundle_name: res["labels"].append({"name": "package", "value": bundle_name})
               if status in ("failed", "broken"):
