@@ -296,34 +296,51 @@ jobs:
         if: failure()
         working-directory: ios-app
         run: |
-          echo "===== test-results tests (compact) — failure-related nodes only ====="
           python3 - <<'PYEOF'
           import json, subprocess, sys
-          raw = subprocess.run(
-              ["xcrun", "xcresulttool", "get", "test-results", "tests",
-               "--path", "TestResult.xcresult", "--compact"],
-              capture_output=True, text=True)
-          if raw.returncode != 0:
-              sys.stderr.write(raw.stderr); sys.exit(0)
-          data = json.loads(raw.stdout)
 
-          def walk(n, depth=0):
-              nt = (n.get("nodeType") or "").strip()
-              nm = n.get("name") or ""
-              res = n.get("result") or ""
-              lo = nt.lower()
-              is_case = lo == "test case"
-              if is_case or ("failure" in lo) or ("issue" in lo):
-                  pad = "  " * depth
-                  extra = f" [result={res}]" if res else ""
-                  # print all keys so we can see where the message text lives
-                  keys = ",".join(k for k in n.keys() if k not in ("children",))
-                  print(f"{pad}<{nt}>{extra} :: {nm}   (keys: {keys})")
+          def xc(*args):
+              return subprocess.run(
+                  ["xcrun", "xcresulttool", "get", "test-results", *args,
+                   "--path", "TestResult.xcresult", "--compact"],
+                  capture_output=True, text=True)
+
+          tests = xc("tests")
+          if tests.returncode != 0:
+              sys.stderr.write(tests.stderr); sys.exit(0)
+          data = json.loads(tests.stdout)
+
+          cases = []
+          def walk(n):
+              lo = (n.get("nodeType") or "").strip().lower()
+              if lo == "test case":
+                  cases.append((n.get("nodeIdentifier") or n.get("name"), n.get("result")))
               for c in n.get("children", []) or []:
-                  walk(c, depth + 1)
-
-          for n in (data.get("testNodes") or data.get("children") or []):
+                  walk(c)
+          for n in (data.get("testNodes") or []):
               walk(n)
+
+          print("===== TEST CASES (id :: result) =====")
+          for cid, res in cases:
+              print(f"  {res}  ::  {cid}")
+
+          failed = [c for c in cases if (c[1] or "").lower() == "failed"]
+          target = failed[0][0] if failed else (cases[0][0] if cases else None)
+
+          print(f"\n===== ACTIVITIES (raw schema) for: {target} =====")
+          if target:
+              act = xc("activities", "--test-id", target)
+              if act.returncode == 0:
+                  # pretty-print first ~7000 chars so we can read the field names
+                  try:
+                      print(json.dumps(json.loads(act.stdout), indent=2, ensure_ascii=False)[:7000])
+                  except Exception:
+                      print(act.stdout[:7000])
+              else:
+                  print("`activities` failed:", act.stderr[:400])
+                  det = xc("test-details", "--test-id", target)
+                  print("\n===== TEST-DETAILS fallback =====")
+                  print(det.stdout[:7000] if det.returncode == 0 else det.stderr[:400])
           PYEOF
         shell: bash
 
@@ -405,7 +422,8 @@ jobs:
               name = (node.get("name") or "").replace("()", "").strip()
               ident = node.get("nodeIdentifier") or ""
               status = map_status(node.get("result"))
-              d = dur_ms(node.get("duration"))
+              d = node.get("durationInSeconds")
+              d = int(float(d) * 1000) if d is not None else dur_ms(node.get("duration"))
               start = cursor[0]; stop = start + d; cursor[0] = stop + 1
               fn = full_name(ident, name, suite)
               res = {
@@ -637,6 +655,46 @@ jobs:
           name: TestResult-xcresult
           path: ios-app/TestResult.xcresult
           retention-days: 7
+
+      # ============================================================
+      # ALLURE 3 TRIAL (side-by-side comparison, safe to keep or delete)
+      # These steps generate a SECOND report using Allure 3, which reads the
+      # .xcresult directly (native test body: steps, sub-steps, attachments).
+      # They are continue-on-error and never touch the Allure 2 pipeline, the
+      # Firebase deploy, or the Google Chat counts (which come from the native
+      # xcresulttool summary). Compare the "allure3-trial-report" artifact with
+      # the normal report, then decide whether to migrate. Delete this whole
+      # block if you stay on Allure 2.
+      # ============================================================
+      - name: "Allure 3 trial — generate report"
+        if: always()
+        continue-on-error: true
+        working-directory: ios-app
+        run: |
+          echo "Node: $(node --version 2>/dev/null || echo 'not found')"
+          # Allure 3 ships on npm as the 'allure' package. Try a global install,
+          # fall back to npx. Allure 3 reads the xcresult bundle directly and
+          # requires a full Xcode install (present on this runner).
+          npm install -g allure >/dev/null 2>&1 || true
+          GEN() { allure "$@" 2>/dev/null || npx --yes allure "$@"; }
+          allure --version 2>/dev/null || npx --yes allure --version || true
+          echo "Generating Allure 3 report from TestResult.xcresult ..."
+          GEN generate TestResult.xcresult --clean --output allure3-report \
+            || GEN generate TestResult.xcresult -o allure3-report \
+            || echo "⚠️ Allure 3 generate failed — check the command/flags for this Allure 3 version above."
+          echo "---- allure3-report contents ----"
+          ls -la allure3-report 2>/dev/null || echo "(no report produced)"
+        shell: bash
+
+      - name: "Allure 3 trial — upload report"
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure3-trial-report
+          path: ios-app/allure3-report
+          retention-days: 7
+          if-no-files-found: ignore
 
       # -------------------- DEPLOY REPORT --------------------
       # See .github/workflows/smoke-test-manual.yml for the web equivalent
