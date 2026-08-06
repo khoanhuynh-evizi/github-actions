@@ -260,7 +260,12 @@ jobs:
         if: always()
         working-directory: ios-app
         run: |
-          npm install -g allure >/dev/null 2>&1 || true
+          # Must be a LOCAL install, not -g: allurerc.mjs does `import { defineConfig }
+          # from "allure"`, and Node's ESM resolver never looks in the global npm
+          # directory for plain `import` specifiers (unlike CJS require+NODE_PATH).
+          # A global install leaves that import unresolvable — "Cannot find package
+          # 'allure'" — even though the `allure` CLI itself is on PATH.
+          npm install allure --no-save >/dev/null 2>&1 || true
           # Full-featured Allure 3 config. Everything that used to be separate
           # files/steps in Allure 2 (categories.json, environment.properties,
           # trend trimming) now lives here. Executor/CI info is auto-detected.
@@ -349,14 +354,23 @@ jobs:
           mkdir -p deploy
           # Allure 3 nests each plugin's report in its own subdir. Serve the
           # awesome report at the site root, and the charts dashboard at /dashboard.
+          #
+          # Guard every branch on the source actually existing: "Generate Allure 3
+          # report" runs with `if: always()`, so a failure there (or an empty
+          # allure-report/) must not hard-fail this step too — under bash -e, a `cp`
+          # whose glob doesn't expand passes the literal pattern through and errors
+          # with "No such file or directory".
           if [ -f ios-app/allure-report/awesome/index.html ]; then
-            cp -r ios-app/allure-report/awesome/* deploy/
+            cp -r ios-app/allure-report/awesome/. deploy/
+          elif [ -d ios-app/allure-report ] && [ -n "$(ls -A ios-app/allure-report 2>/dev/null)" ]; then
+            cp -r ios-app/allure-report/. deploy/   # fallback: whatever was produced
           else
-            cp -r ios-app/allure-report/* deploy/   # fallback: whatever was produced
+            echo "⚠️ No allure-report was generated — deploying a placeholder page instead."
+            echo "<html><body><h1>No Allure report was generated for this run.</h1></body></html>" > deploy/index.html
           fi
           if [ -d ios-app/allure-report/dashboard ]; then
             mkdir -p deploy/dashboard
-            cp -r ios-app/allure-report/dashboard/* deploy/dashboard/
+            cp -r ios-app/allure-report/dashboard/. deploy/dashboard/
           fi
 
       - name: Create firebase config
