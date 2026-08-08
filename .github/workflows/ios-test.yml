@@ -53,7 +53,11 @@ jobs:
     runs-on: ${{ github.event.inputs.runner_type || 'macos-latest' }}
     # Fail fast if the Xcode 26 build deadlock happens, instead of hanging for
     # the full default runner limit. Bump if a healthy run legitimately needs more.
-    timeout-minutes: 75
+    # 75 was too tight for a cold build on Xcode 26.2 (no DerivedData/CocoaPods
+    # cache between runs) — a real, non-deadlocked run was hitting this ceiling
+    # and getting killed by GitHub with "The operation was canceled" rather than
+    # a normal failure. Raised to give a cold build enough headroom.
+    timeout-minutes: 120
     steps:
       # -------------------- CHECKOUT --------------------
       # Workflow repo (this repo) at the workspace root — needed so the
