@@ -150,12 +150,17 @@ jobs:
         run: sh ci_scripts/ci_configuration.sh
         shell: bash
 
-      # ci_scripts/run-testsuite.sh and run-tests.sh pipe xcodebuild through
-      # xcbeautify (not xcpretty — xcpretty is unmaintained and doesn't
-      # compact Xcode 26's build-system trace output).
-      - name: Install xcbeautify
-        run: brew install xcbeautify
-        shell: bash
+      - name: Install xcpretty from https://github.com/xcpretty
+        run: |
+          # Create temporary Gemfile just for xcpretty
+          echo "source 'https://rubygems.org'" > Gemfile
+          echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git', branch: 'master'" >> Gemfile
+
+          # Install using bundler
+          bundle install
+
+          # Verify version
+          bundle exec xcpretty --version
 
       # Allure 3 reads the .xcresult directly — no allure-results dir needed.
       - name: Clean previous test results
