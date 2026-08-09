@@ -115,10 +115,35 @@ jobs:
           os: 'iOS'
           os_version: ${{ inputs.ios-version || '18.2' }}
 
+      # PSPDFKit is fetched as a prebuilt binary from customers.pspdfkit.com on
+      # every cold pod install/update — caching ~/Library/Caches/CocoaPods means
+      # a run only needs that (occasionally flaky) download to succeed once.
+      - name: Cache CocoaPods downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: ${{ runner.os }}-pods-${{ hashFiles('Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
       - name: Install CocoaPods dependencies
         run: |
-          pod install --repo-update
-          pod update Record360SDK
+          # customers.pspdfkit.com (PSPDFKit's binary CDN) occasionally resets the
+          # connection mid-download from GitHub-hosted runners — that's a transient
+          # network blip, not caused by --repo-update, and not something that
+          # avoiding --repo-update fixes (a fresh/uncached run still has to fetch
+          # the same zip either way). Retry instead of failing the whole job on it.
+          for attempt in 1 2 3; do
+            if pod install --repo-update && pod update Record360SDK; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "❌ pod install/update failed after $attempt attempts"
+              exit 1
+            fi
+            echo "⚠️ pod install/update failed (attempt $attempt/3) — retrying in 20s..."
+            sleep 20
+          done
         shell: bash
 
       - name: Copy Configuration plist
