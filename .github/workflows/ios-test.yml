@@ -49,9 +49,16 @@ jobs:
   build:
     name: Test UI on Simulator
     runs-on: ${{ github.event.inputs.runner_type }}
-    # Fail fast instead of hanging for the full default 6h runner limit.
-    # Bump if a healthy cold build legitimately needs more.
-    timeout-minutes: 120
+    # NOTE: the proven-working master workflow never set this at all — it just
+    # used GitHub's default 6h (360 min) job ceiling. This override was added
+    # this session on the theory that a hung build should fail fast; that
+    # theory is now disproven (a real run got 1h53m into genuinely executing
+    # tests, not stuck, and got killed by this timeout before finishing the
+    # suite — which then cascaded into an empty Allure report and an
+    # all-zeros Chat card). Set close to GitHub's hard cap instead of removing
+    # it outright, so a truly hung run still gets killed eventually rather
+    # than eating the full 6h.
+    timeout-minutes: 350
     steps:
       # Same single checkout at repo root as the proven-working master
       # workflow — every step below runs unscoped (no working-directory,
@@ -401,8 +408,17 @@ jobs:
       - name: Notify Google Chat
         if: always()
         run: |
+          # job.status is "success", "failure", or "cancelled" — treat cancelled
+          # (e.g. hit timeout-minutes, or someone cancelled the run) distinctly
+          # from a real test failure. Otherwise a run killed mid-suite (with no
+          # SUITE_* counts set, since Validate xcresult only runs on
+          # success()/failure()) reports as "FAILED" with all-zero counts,
+          # which reads as "ran and everything failed" instead of what
+          # actually happened.
           STATUS="PASSED"; STATUS_COLOR="#0F9D58"; STATUS_ICON="✅"
-          if [ "${{ job.status }}" != "success" ]; then
+          if [ "${{ job.status }}" = "cancelled" ]; then
+            STATUS="CANCELLED"; STATUS_COLOR="#F4B400"; STATUS_ICON="⚠️"
+          elif [ "${{ job.status }}" != "success" ]; then
             STATUS="FAILED"; STATUS_COLOR="#DB4437"; STATUS_ICON="❌"
           fi
 
