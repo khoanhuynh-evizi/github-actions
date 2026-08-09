@@ -1,7 +1,7 @@
 name: iOS UI Test
 run-name: ${{ github.actor }} is XCUITests
 on:
-  workflow_dispatch:    
+  workflow_dispatch:
     inputs:
       runner_type:
         description: 'Input name of runner'
@@ -34,26 +34,42 @@ on:
         description: 'testing branch(e.g., master)'
         required: false
         type: string
+
 env:
-    PATH_TEST_SUITE: record360UITests/Resources/testRun.json
+  PATH_TEST_SUITE: record360UITests/Resources/testRun.json
+  TEST_BUNDLE: record360UITests
+  IOS_FIREBASE_PROJECT_ID: ${{ secrets.IOS_FIREBASE_PROJECT_ID }}
 
 permissions:
   contents: read
   actions: read
   checks: write
-  
+
 jobs:
   build:
     name: Test UI on Simulator
     runs-on: ${{ github.event.inputs.runner_type }}
-    # needs: clean-up-mobile-data-ui-testing
-    steps:    
+    # Fail fast instead of hanging for the full default 6h runner limit.
+    # Bump if a healthy cold build legitimately needs more.
+    timeout-minutes: 120
+    steps:
+      # Same single checkout at repo root as the proven-working master
+      # workflow — every step below runs unscoped (no working-directory,
+      # no ios-app/ subpath) against this checkout.
       - name: Checkout
         uses: actions/checkout@v4
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_IOS_REPOS}}
           ref: ${{ github.event.inputs.testing-branch || 'master' }}
+
+      # Only needed for the Google Chat card template below. Kept in a
+      # subfolder (not root) so it can't collide with the ios-app checkout
+      # above or change how any other step resolves paths.
+      - name: Checkout workflow repo (for Google Chat template)
+        uses: actions/checkout@v4
+        with:
+          path: .workflow-repo
 
       - name: Set up SSH Agent and Key
         uses: tanmancan/action-setup-ssh-agent-key@1.0.0
@@ -69,14 +85,28 @@ jobs:
           npm install
           node firebase.js
           cd ../../
-          
+
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: ${{ inputs.xcode-version || '16.2' }}
 
       - name: Set simulator environment
         run: |
-          echo "SIMULATOR_NAME=${{ inputs.simulator-name || 'iPhone 17' }}" >> $GITHUB_ENV
+          # trim whitespace defensively — xcodebuild's "-destination name=..." match is an
+          # exact string compare, and a stray leading/trailing space (easy to introduce via
+          # workflow_dispatch input) makes it fail to match a device that's clearly listed.
+          echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 17' }}' | xargs)" >> $GITHUB_ENV
+          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '18.2' }}' | xargs)" >> $GITHUB_ENV
+          echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
+          echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
+        shell: bash
+
+      # Simulators default to "Connect Hardware Keyboard" on, which suppresses the
+      # on-screen keyboard — XCUITest's typing synthesis relies on it appearing to
+      # establish keyboard focus, so text-field taps fail with "Neither element nor
+      # any descendant has keyboard focus" without this. Must be set before boot.
+      - name: Disable simulator hardware keyboard
+        run: defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
         shell: bash
 
       - uses: futureware-tech/simulator-action@v4
@@ -84,42 +114,301 @@ jobs:
           model: ${{ inputs.simulator-name || 'iPhone 15' }}
           os: 'iOS'
           os_version: ${{ inputs.ios-version || '18.2' }}
-        
+
       - name: Install CocoaPods dependencies
         run: |
           pod install --repo-update
           pod update Record360SDK
         shell: bash
-        
+
       - name: Copy Configuration plist
         run: sh ci_scripts/ci_configuration.sh
         shell: bash
 
-      - name: Install xcpretty from https://github.com/xcpretty
-        run: |
-          # Create temporary Gemfile just for xcpretty
-          echo "source 'https://rubygems.org'" > Gemfile
-          echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git', branch: 'master'" >> Gemfile
-          
-          # Install using bundler
-          bundle install
-          
-          # Verify version
-          bundle exec xcpretty --version
-        
+      # ci_scripts/run-testsuite.sh and run-tests.sh pipe xcodebuild through
+      # xcbeautify (not xcpretty — xcpretty is unmaintained and doesn't
+      # compact Xcode 26's build-system trace output).
+      - name: Install xcbeautify
+        run: brew install xcbeautify
+        shell: bash
+
+      # Allure 3 reads the .xcresult directly — no allure-results dir needed.
+      - name: Clean previous test results
+        run: rm -rf TestResult.xcresult allure-report history.jsonl allurerc.mjs
+        shell: bash
+
+      - name: Start test timer
+        run: echo "TEST_START_TIME=$(date +%s)" >> $GITHUB_ENV
+        shell: bash
+
       - name: Execute Staging-UI
         if: "${{ inputs.list_tests == '' }}"
         run: |
           chmod +x ./ci_scripts/run-testsuite.sh
-          ./ci_scripts/run-testsuite.sh --testBundle=record360UITests --path="$PATH_TEST_SUITE" --deviceName="${SIMULATOR_NAME}"
+          ./ci_scripts/run-testsuite.sh --testBundle="$TEST_BUNDLE" --path="$PATH_TEST_SUITE" --deviceName="${SIMULATOR_NAME}"
         shell: bash
 
       - name: Execute custom test Staging-UI
         if: "${{ inputs.list_tests != '' }}"
         run: |
           chmod +x ./ci_scripts/run-tests.sh
-          ./ci_scripts/run-tests.sh --testBundle=record360UITests --list-tests=${{ inputs.list_tests }} --deviceName="${SIMULATOR_NAME}"
-        shell: bash          
+          ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests=${{ inputs.list_tests }} --deviceName="${SIMULATOR_NAME}"
+        shell: bash
+
+      - name: Compute test duration
+        if: success() || failure()
+        run: |
+          DURATION=$(( $(date +%s) - TEST_START_TIME ))
+          DURATION_STR="${DURATION}s"
+          if [ "$DURATION" -ge 60 ]; then
+            DURATION_STR="$(( DURATION / 60 ))m $(( DURATION % 60 ))s"
+          fi
+          echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
+        shell: bash
+
+      # -------------------- VALIDATE & CONVERT xcresult --------------------
+      - name: Validate xcresult
+        if: success() || failure()
+        run: |
+          if [ ! -d "TestResult.xcresult" ]; then
+            echo "❌ TestResult.xcresult not found — tests may not have run"
+            exit 1
+          fi
+
+          # `xcresulttool get` (default "object" subcommand) is deprecated on Xcode 16+
+          # and now errors without --legacy — use the current "test-results summary" API.
+          SUMMARY_JSON=$(xcrun xcresulttool get test-results summary --path TestResult.xcresult --compact 2>&1)
+          TOTAL_COUNT=$(echo "$SUMMARY_JSON" | jq '.totalTestCount' 2>/dev/null)
+          if [ -z "$TOTAL_COUNT" ] || [ "$TOTAL_COUNT" = "null" ] || [ "$TOTAL_COUNT" = "0" ]; then
+            echo "❌ xcresult has no recorded tests"
+            echo "$SUMMARY_JSON"
+            exit 1
+          fi
+          echo "✅ xcresult contains $TOTAL_COUNT test(s)"
+
+          PASSED=$(echo "$SUMMARY_JSON"  | jq '.passedTests  // 0')
+          FAILED=$(echo "$SUMMARY_JSON"  | jq '.failedTests  // 0')
+          SKIPPED=$(echo "$SUMMARY_JSON" | jq '.skippedTests // 0')
+          TOTAL=$TOTAL_COUNT
+          PASS_RATE=$(awk "BEGIN{ if ($TOTAL>0) printf \"%.1f\", $PASSED*100/$TOTAL; else print 0 }")
+          {
+            echo "SUITE_PASSED=$PASSED"
+            echo "SUITE_FAILED=$FAILED"
+            echo "SUITE_SKIPPED=$SKIPPED"
+            echo "SUITE_TOTAL=$TOTAL"
+            echo "SUITE_PASS_RATE=$PASS_RATE"
+          } >> "$GITHUB_ENV"
+          echo "Reporting counts → Passed=$PASSED Failed=$FAILED Skipped=$SKIPPED Total=$TOTAL PassRate=$PASS_RATE%"
+        shell: bash
+
+      # -------------------- ALLURE 3 HISTORY (trend persistence) --------------------
+      # Allure 3 stores history as a single JSONL file (was a whole dir in Allure 2).
+      # We persist it across runs in the `allure-history` branch.
+      - name: Get Allure history
+        if: always()
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: ${{ secrets.WDIO_IOS_REPOS }}
+          token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+          ref: allure-history
+          path: report-history
+
+      - name: Restore Allure history file
+        if: always()
+        run: |
+          # Bring the previous run's history.jsonl in so the new report continues
+          # the trend. First run (empty branch) just starts fresh.
+          cp report-history/history.jsonl history.jsonl 2>/dev/null \
+            || echo "No previous history.jsonl (first run?) — starting fresh."
+        shell: bash
+
+      # -------------------- GENERATE ALLURE 3 REPORT --------------------
+      - name: Generate Allure 3 report
+        if: always()
+        run: |
+          # Must be a LOCAL install, not -g: allurerc.mjs does `import { defineConfig }
+          # from "allure"`, and Node's ESM resolver never looks in the global npm
+          # directory for plain `import` specifiers (unlike CJS require+NODE_PATH).
+          npm install allure --no-save >/dev/null 2>&1 || true
+          # Full-featured Allure 3 config. Everything that used to be separate
+          # files/steps in Allure 2 (categories.json, environment.properties,
+          # trend trimming) now lives here. Executor/CI info is auto-detected.
+          cat > allurerc.mjs <<'JS'
+          import { defineConfig } from "allure";
+
+          const v = (k) => process.env[k] || "";
+
+          export default defineConfig({
+            name: "Record360 iOS UI Tests",
+            output: "./allure-report",
+            historyPath: "./history.jsonl",
+            appendHistory: true,
+            historyLimit: 10, // keep last 10 runs in the trend (replaces Trim step)
+            variables: {
+              "Platform": "iOS",
+              "OS Version": v("IOS_VERSION"),
+              "Device": v("SIMULATOR_NAME"),
+              "Xcode Version": v("XCODE_VERSION"),
+              "macOS Version": v("MACOS_VERSION"),
+              "Test Bundle": v("TEST_BUNDLE"),
+            },
+            categories: {
+              rules: [
+                { name: "Product Bugs", matchers: { statuses: ["failed"], trace: /XCTAssert/ } },
+                { name: "Test Bugs",    matchers: { statuses: ["broken"] } },
+                { name: "Skipped",      matchers: { statuses: ["skipped"] } },
+              ],
+            },
+            plugins: {
+              awesome: {
+                options: {
+                  reportName: "Record360 iOS UI Tests",
+                  singleFile: false,
+                  reportLanguage: "en",
+                },
+              },
+              dashboard: {
+                options: {
+                  reportName: "Record360 iOS — Dashboard",
+                  reportLanguage: "en",
+                },
+              },
+            },
+          });
+          JS
+          allure --version 2>/dev/null || npx --yes allure --version || true
+          echo "Generating Allure 3 report from TestResult.xcresult ..."
+          allure generate TestResult.xcresult 2>/dev/null \
+            || npx --yes allure generate TestResult.xcresult
+          echo "---- generated report tree ----"
+          find allure-report -maxdepth 2 -name index.html || true
+        shell: bash
+
+      - name: Save Allure history for next run
+        if: always()
+        run: |
+          mkdir -p allure-history-branch
+          # Allure 3 appended this run to history.jsonl during generate.
+          cp history.jsonl allure-history-branch/history.jsonl 2>/dev/null \
+            || echo "No history.jsonl produced — skipping save."
+        shell: bash
+
+      - name: Push report history to branch
+        if: always()
+        continue-on-error: true
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+          external_repository: ${{ secrets.WDIO_IOS_REPOS }}
+          publish_branch: allure-history
+          publish_dir: allure-history-branch
+
+      # -------------------- ARTIFACTS --------------------
+      - name: Upload Allure HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report/
+          retention-days: 7
+
+      - name: Prepare deploy folder
+        if: always()
+        run: |
+          mkdir -p deploy
+          # Allure 3 nests each plugin's report in its own subdir. Serve the
+          # awesome report at the site root, and the charts dashboard at /dashboard.
+          #
+          # Guard every branch on the source actually existing: this step runs
+          # `if: always()`, so a failure upstream (or an empty allure-report/)
+          # must not hard-fail this step too.
+          if [ -f allure-report/awesome/index.html ]; then
+            cp -r allure-report/awesome/. deploy/
+          elif [ -d allure-report ] && [ -n "$(ls -A allure-report 2>/dev/null)" ]; then
+            cp -r allure-report/. deploy/   # fallback: whatever was produced
+          else
+            echo "⚠️ No allure-report was generated — deploying a placeholder page instead."
+            echo "<html><body><h1>No Allure report was generated for this run.</h1></body></html>" > deploy/index.html
+          fi
+          if [ -d allure-report/dashboard ]; then
+            mkdir -p deploy/dashboard
+            cp -r allure-report/dashboard/. deploy/dashboard/
+          fi
+
+      - name: Create firebase config
+        if: always()
+        run: |
+          echo '{
+            "hosting": {
+              "public": "deploy",
+              "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+              "limit": 3
+            }
+          }' > firebase.json
+
+          echo '{
+            "projects": {
+              "default": "${{ env.IOS_FIREBASE_PROJECT_ID }}"
+            }
+          }' > .firebaserc
+
+      - name: Set up Firebase credentials
+        if: always()
+        run: echo '${{ secrets.IOS_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
+
+      # w9jds/firebase-action is a Docker container action — container actions only
+      # run on Linux runners, and this job runs on macOS (required for Xcode). Use
+      # the Firebase CLI directly via npx instead.
+      - name: Deploy Allure Report to Firebase Hosting
+        if: always()
+        run: npx --yes firebase-tools@latest deploy --only hosting --project "$IOS_FIREBASE_PROJECT_ID"
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
+        shell: bash
+
+      # -------------------- NOTIFY GOOGLE CHAT --------------------
+      - name: Notify Google Chat
+        if: always()
+        run: |
+          STATUS="PASSED"; STATUS_COLOR="#0F9D58"; STATUS_ICON="✅"
+          if [ "${{ job.status }}" != "success" ]; then
+            STATUS="FAILED"; STATUS_COLOR="#DB4437"; STATUS_ICON="❌"
+          fi
+
+          export STATUS STATUS_COLOR STATUS_ICON
+          export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
+          export REPORT_URL="https://${{ env.IOS_FIREBASE_PROJECT_ID }}.web.app"
+          export RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          export PASSED="${SUITE_PASSED:-0}"
+          export FAILED="${SUITE_FAILED:-0}"
+          export SKIPPED="${SUITE_SKIPPED:-0}"
+          export TOTAL="${SUITE_TOTAL:-0}"
+          export PASS_RATE="${SUITE_PASS_RATE:-0}"
+          export DURATION="${TEST_DURATION:-N/A}"
+          export DEVICE="${SIMULATOR_NAME} · iOS ${IOS_VERSION}"
+          export BRANCH="${{ github.event.inputs.testing-branch || 'master' }}"
+
+          # macOS runners don't ship envsubst (gettext) by default, so substitute with python3 instead.
+          python3 - <<'PYEOF'
+          import os
+          from string import Template
+
+          with open(".workflow-repo/.github/googleChat/ios-report-card.json") as f:
+              tpl = Template(f.read())
+
+          keys = ["STATUS_ICON", "DATE_TIME", "REPORT_URL", "RUN_URL", "PASSED", "PASS_RATE",
+                  "FAILED", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH", "STATUS_COLOR", "STATUS"]
+          payload = tpl.safe_substitute({k: os.environ.get(k, "") for k in keys})
+
+          with open("payload.json", "w") as f:
+              f.write(payload)
+          PYEOF
+
+          curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d @payload.json
+        shell: bash
 
       - uses: actions/upload-artifact@v4
         if: always()
