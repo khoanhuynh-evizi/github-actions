@@ -237,9 +237,21 @@ jobs:
           ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests="${{ matrix.shard.tests }}" --deviceName="${SIMULATOR_NAME}"
         shell: bash
 
-      - name: Rename result bundle for this shard
+      # Each shard runs on its own isolated runner, so TestResult.xcresult
+      # never collides between shards on disk — only the ARTIFACT NAME needs
+      # to be unique (below), not the file itself. A prior version renamed
+      # the bundle via `mv` before upload; that step failed with no visible
+      # error and turned out to be unnecessary complexity, so it's gone.
+      - name: Check for result bundle
         if: always()
-        run: mv TestResult.xcresult "TestResult-shard-${{ matrix.shard.index }}.xcresult"
+        run: |
+          if [ -d TestResult.xcresult ]; then
+            echo "✅ TestResult.xcresult exists"
+            ls -la TestResult.xcresult | head -20
+          else
+            echo "❌ TestResult.xcresult does not exist in $(pwd) — xcodebuild likely didn't get far enough to write one"
+            ls -la
+          fi
         shell: bash
 
       - name: Upload shard xcresult
@@ -247,8 +259,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: xcresult-shard-${{ matrix.shard.index }}
-          path: TestResult-shard-${{ matrix.shard.index }}.xcresult
+          path: TestResult.xcresult
           retention-days: 7
+          if-no-files-found: warn
 
   # -------------------- REPORT & NOTIFY --------------------
   # Runs regardless of how the shards went (always()) — merges whatever
