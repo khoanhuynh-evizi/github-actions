@@ -34,6 +34,11 @@ on:
         description: 'testing branch(e.g., master)'
         required: false
         type: string
+      shard_count:
+        description: 'Number of parallel shards for the full suite (ignored when list_tests is set)'
+        required: false
+        default: '6'
+        type: string
 
 env:
   PATH_TEST_SUITE: record360UITests/Resources/testRun.json
@@ -46,37 +51,111 @@ permissions:
   checks: write
 
 jobs:
-  build:
-    name: Test UI on Simulator
-    runs-on: ${{ github.event.inputs.runner_type }}
-    # NOTE: the proven-working master workflow never set this at all — it just
-    # used GitHub's default 6h (360 min) job ceiling. This override was added
-    # this session on the theory that a hung build should fail fast; that
-    # theory is now disproven (a real run got 1h53m into genuinely executing
-    # tests, not stuck, and got killed by this timeout before finishing the
-    # suite — which then cascaded into an empty Allure report and an
-    # all-zeros Chat card). Set close to GitHub's hard cap instead of removing
-    # it outright, so a truly hung run still gets killed eventually rather
-    # than eating the full 6h.
-    timeout-minutes: 350
+  # -------------------- TIMER --------------------
+  # Wall-clock start, independent of which test path runs, so `report` can
+  # compute total pipeline duration (checkout → all shards → report) instead
+  # of just one job's runtime — the point of sharding is that this is now
+  # much shorter than the old single-job serial time.
+  start:
+    name: Start timer
+    runs-on: ubuntu-latest
+    outputs:
+      start_time: ${{ steps.t.outputs.start_time }}
     steps:
-      # Same single checkout at repo root as the proven-working master
-      # workflow — every step below runs unscoped (no working-directory,
-      # no ios-app/ subpath) against this checkout.
+      - id: t
+        run: echo "start_time=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+  # -------------------- PLAN SHARDS --------------------
+  # Splits the test list round-robin across N shards, so the `test` matrix
+  # below runs each shard's -only-testing: subset in parallel. Source list is
+  # either the user-provided `list_tests` (comma/space separated class names —
+  # same format as testRun.json's `name` fields), or every enabled test class
+  # in testRun.json when list_tests is empty (full-suite run). Sharding a
+  # small list_tests run too (not just the full suite) means a cheap 2-3 test
+  # run exercises the exact same plan → matrix → merge machinery as a full
+  # run, instead of leaving that path untested until the expensive real run.
+  plan:
+    name: Plan test shards
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.split.outputs.shards }}
+    steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           token: ${{secrets.WDIO_ACCESS_TOKEN}}
           repository: ${{secrets.WDIO_IOS_REPOS}}
           ref: ${{ github.event.inputs.testing-branch || 'master' }}
+          sparse-checkout: |
+            record360UITests/Resources/testRun.json
+          sparse-checkout-cone-mode: false
 
-      # Only needed for the Google Chat card template below. Kept in a
-      # subfolder (not root) so it can't collide with the ios-app checkout
-      # above or change how any other step resolves paths.
-      - name: Checkout workflow repo (for Google Chat template)
+      - id: split
+        env:
+          SHARD_COUNT: ${{ inputs.shard_count || '6' }}
+          TEST_RUN_JSON: ${{ env.PATH_TEST_SUITE }}
+          LIST_TESTS: ${{ inputs.list_tests }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+
+          list_tests = os.environ.get("LIST_TESTS", "").strip()
+          if list_tests:
+              names = [t for t in re.split(r"[,\s]+", list_tests) if t]
+              print(f"Using {len(names)} test(s) from list_tests input")
+          else:
+              with open(os.environ["TEST_RUN_JSON"]) as f:
+                  data = json.load(f)
+              names = []
+              for feature in data["testsuite"]:
+                  if feature.get("enabled"):
+                      for tc in feature.get("testCases", []):
+                          if tc.get("enabled"):
+                              names.append(tc["name"])
+              print(f"Using {len(names)} enabled test(s) from testRun.json")
+
+          n = max(1, int(os.environ["SHARD_COUNT"]))
+          n = min(n, len(names)) if names else n
+          shards = [[] for _ in range(n)]
+          for i, name in enumerate(names):
+              shards[i % n].append(name)
+          shards = [s for s in shards if s]  # fewer tests than shards requested
+
+          matrix = [
+              {"index": i + 1, "tests": ",".join(s), "count": len(s)}
+              for i, s in enumerate(shards)
+          ]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as gh:
+              gh.write("shards=" + json.dumps(matrix) + "\n")
+
+          print(f"Planned {len(matrix)} shard(s) covering {len(names)} test(s) total")
+          for m in matrix:
+              print(f"  shard {m['index']}: {m['count']} test(s)")
+          PY
+        shell: bash
+
+  # -------------------- SHARDED TEST EXECUTION --------------------
+  test:
+    name: "Test shard ${{ matrix.shard.index }}"
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.plan.outputs.shards) }}
+    runs-on: ${{ github.event.inputs.runner_type || 'macos-latest' }}
+    # Each shard only carries ~1/N of the suite, so it should comfortably fit
+    # well under GitHub's 6h hard ceiling for hosted runners — that ceiling
+    # is what made a single non-sharded job unworkable at all.
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          path: .workflow-repo
+          token: ${{secrets.WDIO_ACCESS_TOKEN}}
+          repository: ${{secrets.WDIO_IOS_REPOS}}
+          ref: ${{ github.event.inputs.testing-branch || 'master' }}
 
       - name: Set up SSH Agent and Key
         uses: tanmancan/action-setup-ssh-agent-key@1.0.0
@@ -99,19 +178,12 @@ jobs:
 
       - name: Set simulator environment
         run: |
-          # trim whitespace defensively — xcodebuild's "-destination name=..." match is an
-          # exact string compare, and a stray leading/trailing space (easy to introduce via
-          # workflow_dispatch input) makes it fail to match a device that's clearly listed.
           echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 17' }}' | xargs)" >> $GITHUB_ENV
           echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '18.2' }}' | xargs)" >> $GITHUB_ENV
           echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
           echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
         shell: bash
 
-      # Simulators default to "Connect Hardware Keyboard" on, which suppresses the
-      # on-screen keyboard — XCUITest's typing synthesis relies on it appearing to
-      # establish keyboard focus, so text-field taps fail with "Neither element nor
-      # any descendant has keyboard focus" without this. Must be set before boot.
       - name: Disable simulator hardware keyboard
         run: defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
         shell: bash
@@ -122,9 +194,6 @@ jobs:
           os: 'iOS'
           os_version: ${{ inputs.ios-version || '18.2' }}
 
-      # PSPDFKit is fetched as a prebuilt binary from customers.pspdfkit.com on
-      # every cold pod install/update — caching ~/Library/Caches/CocoaPods means
-      # a run only needs that (occasionally flaky) download to succeed once.
       - name: Cache CocoaPods downloads
         uses: actions/cache@v4
         with:
@@ -136,10 +205,8 @@ jobs:
       - name: Install CocoaPods dependencies
         run: |
           # customers.pspdfkit.com (PSPDFKit's binary CDN) occasionally resets the
-          # connection mid-download from GitHub-hosted runners — that's a transient
-          # network blip, not caused by --repo-update, and not something that
-          # avoiding --repo-update fixes (a fresh/uncached run still has to fetch
-          # the same zip either way). Retry instead of failing the whole job on it.
+          # connection mid-download from GitHub-hosted runners — retry instead of
+          # failing the whole shard on a transient blip.
           for attempt in 1 2 3; do
             if pod install --repo-update && pod update Record360SDK; then
               break
@@ -159,43 +226,75 @@ jobs:
 
       - name: Install xcpretty from https://github.com/xcpretty
         run: |
-          # Create temporary Gemfile just for xcpretty
           echo "source 'https://rubygems.org'" > Gemfile
           echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git', branch: 'master'" >> Gemfile
-
-          # Install using bundler
           bundle install
-
-          # Verify version
           bundle exec xcpretty --version
 
-      # Allure 3 reads the .xcresult directly — no allure-results dir needed.
-      - name: Clean previous test results
-        run: rm -rf TestResult.xcresult allure-report history.jsonl allurerc.mjs
-        shell: bash
-
-      - name: Start test timer
-        run: echo "TEST_START_TIME=$(date +%s)" >> $GITHUB_ENV
-        shell: bash
-
-      - name: Execute Staging-UI
-        if: "${{ inputs.list_tests == '' }}"
-        run: |
-          chmod +x ./ci_scripts/run-testsuite.sh
-          ./ci_scripts/run-testsuite.sh --testBundle="$TEST_BUNDLE" --path="$PATH_TEST_SUITE" --deviceName="${SIMULATOR_NAME}"
-        shell: bash
-
-      - name: Execute custom test Staging-UI
-        if: "${{ inputs.list_tests != '' }}"
+      - name: Run shard tests
         run: |
           chmod +x ./ci_scripts/run-tests.sh
-          ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests=${{ inputs.list_tests }} --deviceName="${SIMULATOR_NAME}"
+          ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests="${{ matrix.shard.tests }}" --deviceName="${SIMULATOR_NAME}"
+        shell: bash
+
+      - name: Rename result bundle for this shard
+        if: always()
+        run: mv TestResult.xcresult "TestResult-shard-${{ matrix.shard.index }}.xcresult"
+        shell: bash
+
+      - name: Upload shard xcresult
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcresult-shard-${{ matrix.shard.index }}
+          path: TestResult-shard-${{ matrix.shard.index }}.xcresult
+          retention-days: 7
+
+  # -------------------- REPORT & NOTIFY --------------------
+  # Runs regardless of how the shards went (always()) — merges whatever
+  # shard xcresults actually got uploaded, then reports on exactly that,
+  # same as the single-job version used to.
+  report:
+    name: Report & Notify
+    needs: [start, plan, test]
+    if: always()
+    runs-on: ${{ github.event.inputs.runner_type || 'macos-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{secrets.WDIO_ACCESS_TOKEN}}
+          repository: ${{secrets.WDIO_IOS_REPOS}}
+          ref: ${{ github.event.inputs.testing-branch || 'master' }}
+
+      # Only needed for the Google Chat card template below. Kept in a
+      # subfolder (not root) so it can't collide with the ios-app checkout
+      # above or change how any other step resolves paths.
+      - name: Checkout workflow repo (for Google Chat template)
+        uses: actions/checkout@v4
+        with:
+          path: .workflow-repo
+
+      # Same Xcode version as whatever generated the shard xcresults — a
+      # newer/older xcresulttool than the one that produced the bundle can
+      # fail to read it.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ inputs.xcode-version || '16.2' }}
+
+      - name: Set report metadata
+        run: |
+          echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 17' }}' | xargs)" >> $GITHUB_ENV
+          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '18.2' }}' | xargs)" >> $GITHUB_ENV
+          echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
+          echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
         shell: bash
 
       - name: Compute test duration
-        if: success() || failure()
         run: |
-          DURATION=$(( $(date +%s) - TEST_START_TIME ))
+          START=${{ needs.start.outputs.start_time }}
+          NOW=$(date +%s)
+          DURATION=$(( NOW - START ))
           DURATION_STR="${DURATION}s"
           if [ "$DURATION" -ge 60 ]; then
             DURATION_STR="$(( DURATION / 60 ))m $(( DURATION % 60 ))s"
@@ -203,12 +302,37 @@ jobs:
           echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
         shell: bash
 
+      - name: Download all shard/custom results
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: xcresult-*
+          path: results
+          merge-multiple: true
+
+      # -------------------- MERGE xcresult BUNDLES --------------------
+      - name: Merge xcresult bundles
+        run: |
+          shopt -s nullglob
+          bundles=(results/*.xcresult)
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            echo "❌ No xcresult bundles downloaded from any shard/job — nothing to merge"
+          elif [ "${#bundles[@]}" -eq 1 ]; then
+            echo "Only one bundle — copying as-is: ${bundles[0]}"
+            cp -r "${bundles[0]}" TestResult.xcresult
+          else
+            echo "Merging ${#bundles[@]} xcresult bundle(s): ${bundles[*]}"
+            xcrun xcresulttool merge "${bundles[@]}" --output-path TestResult.xcresult \
+              || xcrun xcresulttool merge --legacy "${bundles[@]}" --output-path TestResult.xcresult
+          fi
+        shell: bash
+
       # -------------------- VALIDATE & CONVERT xcresult --------------------
       - name: Validate xcresult
-        if: success() || failure()
+        if: always()
         run: |
           if [ ! -d "TestResult.xcresult" ]; then
-            echo "❌ TestResult.xcresult not found — tests may not have run"
+            echo "❌ TestResult.xcresult not found — no shard produced a usable result"
             exit 1
           fi
 
@@ -408,18 +532,21 @@ jobs:
       - name: Notify Google Chat
         if: always()
         run: |
-          # job.status is "success", "failure", or "cancelled" — treat cancelled
-          # (e.g. hit timeout-minutes, or someone cancelled the run) distinctly
-          # from a real test failure. Otherwise a run killed mid-suite (with no
-          # SUITE_* counts set, since Validate xcresult only runs on
-          # success()/failure()) reports as "FAILED" with all-zero counts,
-          # which reads as "ran and everything failed" instead of what
-          # actually happened.
-          STATUS="PASSED"; STATUS_COLOR="#0F9D58"; STATUS_ICON="✅"
-          if [ "${{ job.status }}" = "cancelled" ]; then
+          # job.status here is `report`'s own status. A shard failing/getting
+          # cancelled doesn't fail `report` itself (needs: [...] + if: always()),
+          # so real PASSED/FAILED signal comes from the SUITE_* counts set by
+          # Validate xcresult above, not from job.status. job.status only goes
+          # non-success if something in THIS job (merge/report machinery) broke.
+          if [ -n "${SUITE_TOTAL:-}" ] && [ "${SUITE_TOTAL:-0}" != "0" ]; then
+            if [ "${SUITE_FAILED:-0}" = "0" ]; then
+              STATUS="PASSED"; STATUS_COLOR="#0F9D58"; STATUS_ICON="✅"
+            else
+              STATUS="FAILED"; STATUS_COLOR="#DB4437"; STATUS_ICON="❌"
+            fi
+          else
+            # No usable xcresult at all (every shard cancelled/crashed before
+            # producing one) — distinct from "ran and failed".
             STATUS="CANCELLED"; STATUS_COLOR="#F4B400"; STATUS_ICON="⚠️"
-          elif [ "${{ job.status }}" != "success" ]; then
-            STATUS="FAILED"; STATUS_COLOR="#DB4437"; STATUS_ICON="❌"
           fi
 
           export STATUS STATUS_COLOR STATUS_ICON
