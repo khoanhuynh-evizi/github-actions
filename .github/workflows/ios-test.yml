@@ -237,21 +237,30 @@ jobs:
           ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests="${{ matrix.shard.tests }}" --deviceName="${SIMULATOR_NAME}"
         shell: bash
 
-      # Each shard runs on its own isolated runner, so TestResult.xcresult
-      # never collides between shards on disk — only the ARTIFACT NAME needs
-      # to be unique (below), not the file itself. A prior version renamed
-      # the bundle via `mv` before upload; that step failed with no visible
-      # error and turned out to be unnecessary complexity, so it's gone.
-      - name: Check for result bundle
+      # actions/upload-artifact@v4, when given a single directory as `path:`,
+      # uploads that directory's CONTENTS as the artifact root — it does NOT
+      # preserve the directory's own name. Uploading `path: TestResult.xcresult`
+      # directly therefore loses the ".xcresult" wrapper entirely: after
+      # `report` downloads every shard's artifact with merge-multiple: true,
+      # all shards' bundle-internal files (Info.plist, Data/, ...) land loose
+      # in the same folder with no "*.xcresult" directory left to glob for —
+      # which is exactly what "No xcresult bundles ... nothing to merge" was.
+      # Fix: wrap the bundle in a shard-uniquely-named parent dir before
+      # upload, so that name survives the upload → download round trip, and
+      # so multiple shards' payloads don't collide once merged together.
+      - name: Package result bundle for upload
         if: always()
         run: |
           if [ -d TestResult.xcresult ]; then
             echo "✅ TestResult.xcresult exists"
-            ls -la TestResult.xcresult | head -20
           else
             echo "❌ TestResult.xcresult does not exist in $(pwd) — xcodebuild likely didn't get far enough to write one"
             ls -la
+            exit 0
           fi
+          mkdir -p shard-payload
+          mv TestResult.xcresult "shard-payload/TestResult-shard-${{ matrix.shard.index }}.xcresult"
+          ls -la shard-payload
         shell: bash
 
       - name: Upload shard xcresult
@@ -259,7 +268,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: xcresult-shard-${{ matrix.shard.index }}
-          path: TestResult.xcresult
+          path: shard-payload
           retention-days: 7
           if-no-files-found: warn
 
