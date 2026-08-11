@@ -355,7 +355,12 @@ jobs:
       - name: Export Failed Test Cases to Google Sheets
         if: always() && env.SUITE_FAILED != '' && env.SUITE_FAILED != '0'
         run: |
-          pip install --quiet google-auth google-auth-httplib2 google-api-python-client
+          # Use `python3 -m pip` (not bare `pip`) so the install target is
+          # guaranteed to be the exact same interpreter that runs the script
+          # below — a bare `pip` can resolve to a different Python on a
+          # runner with multiple installs, leaving the right python3 unable
+          # to see the just-installed packages ("No module named 'google'").
+          python3 -m pip install --quiet google-auth google-auth-httplib2 google-api-python-client
 
           python3 << 'PYEOF'
           import datetime
