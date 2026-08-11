@@ -360,7 +360,12 @@ jobs:
           # below — a bare `pip` can resolve to a different Python on a
           # runner with multiple installs, leaving the right python3 unable
           # to see the just-installed packages ("No module named 'google'").
-          python3 -m pip install --quiet google-auth google-auth-httplib2 google-api-python-client
+          #
+          # --break-system-packages: the runner's Homebrew Python enforces
+          # PEP 668 and refuses a global `pip install` outright otherwise.
+          # Safe here — this is a fresh, single-use CI VM with nothing else
+          # relying on its system Python, not a shared/persistent machine.
+          python3 -m pip install --quiet --break-system-packages google-auth google-auth-httplib2 google-api-python-client
 
           python3 << 'PYEOF'
           import datetime
