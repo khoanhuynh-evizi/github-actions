@@ -394,9 +394,13 @@ jobs:
 
           # ── Pull failed test-class names out of the merged xcresult ──────────
           # `xcresulttool get test-results tests` (Xcode 16+) returns a nested
-          # test-node tree; exact depth varies (plan → bundle → class → case),
-          # so this only assumes "leaf node with a failing result" + "its
-          # immediate parent's name is the class" rather than a fixed depth.
+          # test-node tree: Test Plan → (UI/Unit) test bundle → Test Suite (=
+          # the test CLASS, e.g. "LoginSuccess" — matches testRun.json's
+          # testCases[].name exactly) → Test Case (the method) → Failure
+          # Message (only present on failure). Confirmed against a real run's
+          # dumped tree. Match directly on nodeType == "Test Suite" with a
+          # failing result — no need to track parent/depth at all, so this
+          # stays correct even if retries/multi-device add extra levels.
           proc = subprocess.run(
               ["xcrun", "xcresulttool", "get", "test-results", "tests",
                "--path", XCRESULT, "--compact"],
@@ -407,16 +411,17 @@ jobs:
           try:
               data = json.loads(proc.stdout)
 
-              def walk(node, parent_name):
-                  children = node.get("children") or []
+              def walk(node):
                   status = str(node.get("result", "")).lower()
-                  if not children and "fail" in status and parent_name:
-                      failed_classes.add(parent_name)
-                  for child in children:
-                      walk(child, node.get("name", parent_name))
+                  if node.get("nodeType") == "Test Suite" and "fail" in status:
+                      name = node.get("name")
+                      if name:
+                          failed_classes.add(name)
+                  for child in (node.get("children") or []):
+                      walk(child)
 
               for root in data.get("testNodes", []):
-                  walk(root, None)
+                  walk(root)
           except Exception as e:
               print(f"⚠️ Could not parse xcresulttool test-results output: {e}")
               print(proc.stdout[:2000])
