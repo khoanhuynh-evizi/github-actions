@@ -8,27 +8,23 @@ on:
         required: true
         default: 'macos-latest'
         type: string
-      useUrlTestData:
-        description: Enable download testdata from url
-        type: boolean
-        required: false
       list_tests:
         description: Input subset of tests for testing
         required: false
       ios-version:
-        description: 'iOS Version (e.g., 18.2)'
+        description: 'iOS Version (e.g., 26.2)'
         required: false
-        default: '18.2'
+        default: '26.2'
         type: string
       simulator-name:
         description: 'Simulator Name'
         required: false
-        default: 'iPhone 16'
+        default: 'iPhone 17'
         type: string
       xcode-version:
         description: 'Xcode version'
         required: false
-        default: '16.2'
+        default: '26.2'
         type: string
       testing-branch:
         description: 'testing branch(e.g., master)'
@@ -37,7 +33,7 @@ on:
       shard_count:
         description: 'Number of parallel shards for the full suite (ignored when list_tests is set)'
         required: false
-        default: '6'
+        default: '2'
         type: string
 
 env:
@@ -52,10 +48,6 @@ permissions:
 
 jobs:
   # -------------------- TIMER --------------------
-  # Wall-clock start, independent of which test path runs, so `report` can
-  # compute total pipeline duration (checkout → all shards → report) instead
-  # of just one job's runtime — the point of sharding is that this is now
-  # much shorter than the old single-job serial time.
   start:
     name: Start timer
     runs-on: ubuntu-latest
@@ -66,14 +58,6 @@ jobs:
         run: echo "start_time=$(date +%s)" >> "$GITHUB_OUTPUT"
 
   # -------------------- PLAN SHARDS --------------------
-  # Splits the test list round-robin across N shards, so the `test` matrix
-  # below runs each shard's -only-testing: subset in parallel. Source list is
-  # either the user-provided `list_tests` (comma/space separated class names —
-  # same format as testRun.json's `name` fields), or every enabled test class
-  # in testRun.json when list_tests is empty (full-suite run). Sharding a
-  # small list_tests run too (not just the full suite) means a cheap 2-3 test
-  # run exercises the exact same plan → matrix → merge machinery as a full
-  # run, instead of leaving that path untested until the expensive real run.
   plan:
     name: Plan test shards
     runs-on: ubuntu-latest
@@ -145,9 +129,6 @@ jobs:
       matrix:
         shard: ${{ fromJson(needs.plan.outputs.shards) }}
     runs-on: ${{ github.event.inputs.runner_type || 'macos-latest' }}
-    # Each shard only carries ~1/N of the suite, so it should comfortably fit
-    # well under GitHub's 6h hard ceiling for hosted runners — that ceiling
-    # is what made a single non-sharded job unworkable at all.
     timeout-minutes: 300
     steps:
       - name: Checkout
@@ -163,23 +144,14 @@ jobs:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
           ssh-public-key: ${{ secrets.PUBLIC_KEY_CHECKOUT }}
 
-      - name: Download Test data from firebase
-        if: "${{ inputs.useUrlTestData == true }}"
-        run: |
-          echo "${{ secrets.FIREBASE_SDK_KEY }}" > record360UITests/Firebase/firebase-sdk-key.json
-          cd record360UITests/Firebase
-          npm install
-          node firebase.js
-          cd ../../
-
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: ${{ inputs.xcode-version || '16.2' }}
+          xcode-version: ${{ inputs.xcode-version || '26.2' }}
 
       - name: Set simulator environment
         run: |
           echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 17' }}' | xargs)" >> $GITHUB_ENV
-          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '18.2' }}' | xargs)" >> $GITHUB_ENV
+          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '26.2' }}' | xargs)" >> $GITHUB_ENV
           echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
           echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
         shell: bash
@@ -190,9 +162,9 @@ jobs:
 
       - uses: futureware-tech/simulator-action@v4
         with:
-          model: ${{ inputs.simulator-name || 'iPhone 15' }}
+          model: ${{ inputs.simulator-name || 'iPhone 17' }}
           os: 'iOS'
-          os_version: ${{ inputs.ios-version || '18.2' }}
+          os_version: ${{ inputs.ios-version || '26.2' }}
 
       - name: Cache CocoaPods downloads
         uses: actions/cache@v4
@@ -237,17 +209,6 @@ jobs:
           ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests="${{ matrix.shard.tests }}" --deviceName="${SIMULATOR_NAME}"
         shell: bash
 
-      # actions/upload-artifact@v4, when given a single directory as `path:`,
-      # uploads that directory's CONTENTS as the artifact root — it does NOT
-      # preserve the directory's own name. Uploading `path: TestResult.xcresult`
-      # directly therefore loses the ".xcresult" wrapper entirely: after
-      # `report` downloads every shard's artifact with merge-multiple: true,
-      # all shards' bundle-internal files (Info.plist, Data/, ...) land loose
-      # in the same folder with no "*.xcresult" directory left to glob for —
-      # which is exactly what "No xcresult bundles ... nothing to merge" was.
-      # Fix: wrap the bundle in a shard-uniquely-named parent dir before
-      # upload, so that name survives the upload → download round trip, and
-      # so multiple shards' payloads don't collide once merged together.
       - name: Package result bundle for upload
         if: always()
         run: |
@@ -273,9 +234,6 @@ jobs:
           if-no-files-found: warn
 
   # -------------------- REPORT & NOTIFY --------------------
-  # Runs regardless of how the shards went (always()) — merges whatever
-  # shard xcresults actually got uploaded, then reports on exactly that,
-  # same as the single-job version used to.
   report:
     name: Report & Notify
     needs: [start, plan, test]
@@ -302,17 +260,19 @@ jobs:
       # fail to read it.
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: ${{ inputs.xcode-version || '16.2' }}
+          xcode-version: ${{ inputs.xcode-version || '26.2' }}
 
       - name: Set report metadata
+        if: always()
         run: |
           echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 17' }}' | xargs)" >> $GITHUB_ENV
-          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '18.2' }}' | xargs)" >> $GITHUB_ENV
+          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '26.2' }}' | xargs)" >> $GITHUB_ENV
           echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
           echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
         shell: bash
 
       - name: Compute test duration
+        if: always()
         run: |
           START=${{ needs.start.outputs.start_time }}
           NOW=$(date +%s)
@@ -324,7 +284,8 @@ jobs:
           echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
         shell: bash
 
-      - name: Download all shard/custom results
+      - name: Download all shard results
+        if: always()
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
@@ -334,6 +295,7 @@ jobs:
 
       # -------------------- MERGE xcresult BUNDLES --------------------
       - name: Merge xcresult bundles
+        if: always()
         run: |
           shopt -s nullglob
           bundles=(results/*.xcresult)
@@ -384,9 +346,277 @@ jobs:
           echo "Reporting counts → Passed=$PASSED Failed=$FAILED Skipped=$SKIPPED Total=$TOTAL PassRate=$PASS_RATE%"
         shell: bash
 
+      # -------------------- EXPORT FAILED TEST CASES TO GOOGLE SHEETS --------------------
+      # Same sheet layout/formatting as smoke-test-manual.yml's WDIO export
+      # (feature header rows, checkbox + Type/Status dropdowns, colored
+      # chips) — adapted source: WDIO parses a spec-reporter log, iOS instead
+      # reads the merged .xcresult directly and maps each failed test class
+      # back to its testRun.json feature grouping.
+      - name: Export Failed Test Cases to Google Sheets
+        if: always() && env.SUITE_FAILED != '' && env.SUITE_FAILED != '0'
+        run: |
+          pip install --quiet google-auth google-auth-httplib2 google-api-python-client
+
+          python3 << 'PYEOF'
+          import datetime
+          import json
+          import os
+          import subprocess
+          from collections import OrderedDict
+
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+
+          # ── Config ────────────────────────────────────────────────────────────
+          SA_JSON       = os.environ["GSHEET_SERVICE_ACCOUNT"]
+          SPREADSHEET   = os.environ["GSHEET_SPREADSHEET_ID"]
+          XCRESULT      = "TestResult.xcresult"
+          TEST_RUN_JSON = os.environ["TEST_RUN_JSON"]
+          SCOPES        = ["https://www.googleapis.com/auth/spreadsheets"]
+
+          # ── Build test-class → feature map from testRun.json ─────────────────
+          with open(TEST_RUN_JSON) as f:
+              suite = json.load(f)
+          feature_of = {}
+          for feature in suite["testsuite"]:
+              for tc in feature.get("testCases", []):
+                  feature_of[tc["name"]] = feature["name"]
+
+          # ── Pull failed test-class names out of the merged xcresult ──────────
+          # `xcresulttool get test-results tests` (Xcode 16+) returns a nested
+          # test-node tree; exact depth varies (plan → bundle → class → case),
+          # so this only assumes "leaf node with a failing result" + "its
+          # immediate parent's name is the class" rather than a fixed depth.
+          proc = subprocess.run(
+              ["xcrun", "xcresulttool", "get", "test-results", "tests",
+               "--path", XCRESULT, "--compact"],
+              capture_output=True, text=True,
+          )
+          failed_classes = set()
+          try:
+              data = json.loads(proc.stdout)
+
+              def walk(node, parent_name):
+                  children = node.get("children") or []
+                  status = str(node.get("result", "")).lower()
+                  if not children and "fail" in status and parent_name:
+                      failed_classes.add(parent_name)
+                  for child in children:
+                      walk(child, node.get("name", parent_name))
+
+              for root in data.get("testNodes", []):
+                  walk(root, None)
+          except Exception as e:
+              print(f"⚠️ Could not parse xcresulttool test-results output: {e}")
+              print(proc.stdout[:2000])
+
+          if not failed_classes:
+              print("No failed test classes resolved from xcresult — skipping Google Sheets export.")
+              raise SystemExit(0)
+
+          feature_map = OrderedDict()
+          for cls in sorted(failed_classes):
+              feat = feature_of.get(cls, "Unknown")
+              feature_map.setdefault(feat, []).append(cls)
+
+          total_failed = sum(len(v) for v in feature_map.values())
+          print(f"Found {total_failed} failed test class(es) across {len(feature_map)} feature(s):")
+          for feat, tcs in feature_map.items():
+              print(f"  [{feat}]")
+              for tc in tcs:
+                  print(f"    • {tc}")
+
+          # ── Auth ──────────────────────────────────────────────────────────────
+          creds   = service_account.Credentials.from_service_account_info(
+                        json.loads(SA_JSON), scopes=SCOPES)
+          service = build("sheets", "v4", credentials=creds)
+          sheets  = service.spreadsheets()
+
+          # ── Resolve target sheet name (MM/DD or MM/DD-2, MM/DD-3 …) ──────────
+          tz        = datetime.timezone(datetime.timedelta(hours=7))
+          today     = datetime.datetime.now(tz)
+          base_name = today.strftime("%m/%d")
+
+          meta     = sheets.get(spreadsheetId=SPREADSHEET).execute()
+          existing = {s["properties"]["title"] for s in meta["sheets"]}
+
+          sheet_name = base_name
+          idx = 2
+          while sheet_name in existing:
+              sheet_name = f"{base_name}-{idx}"
+              idx += 1
+
+          # ── Build row data ────────────────────────────────────────────────────
+          # Columns: A=TCs | B=Run | C=Type | D=Status | E=Note | F-Z=empty
+          TOTAL_COLS = 26
+          EMPTY      = [""] * (TOTAL_COLS - 5)
+
+          header_row          = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
+          all_rows            = [header_row]
+          feature_row_indices = []
+          tc_row_indices      = []
+
+          for feat_name, tcs in feature_map.items():
+              feature_row_indices.append(len(all_rows))
+              all_rows.append([feat_name] + [""] * (TOTAL_COLS - 1))
+              for tc in tcs:
+                  tc_row_indices.append(len(all_rows))
+                  # B=True (boolean) → renders as a checked checkbox after validation applied
+                  all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
+
+          total_rows = len(all_rows)
+
+          # ── Create the new sheet ──────────────────────────────────────────────
+          resp = sheets.batchUpdate(
+              spreadsheetId=SPREADSHEET,
+              body={"requests": [{"addSheet": {"properties": {
+                  "title": sheet_name,
+                  "index": 0,
+                  "gridProperties": {
+                      "rowCount": max(200, total_rows + 10),
+                      "columnCount": TOTAL_COLS,
+                  },
+              }}}]},
+          ).execute()
+          new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
+          print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
+
+          def cr(r1, c1, r2, c2):
+              return {"sheetId": new_sheet_id,
+                      "startRowIndex": r1, "endRowIndex": r2,
+                      "startColumnIndex": c1, "endColumnIndex": c2}
+
+          DARK_BG   = {"red": 0.2,   "green": 0.2,   "blue": 0.2}
+          YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}
+          RED_BG    = {"red": 0.863, "green": 0.196, "blue": 0.184}
+          GREEN_BG  = {"red": 0.118, "green": 0.588, "blue": 0.235}
+          GRAY_BG   = {"red": 0.851, "green": 0.851, "blue": 0.851}
+          WHITE     = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
+          BLACK     = {"red": 0.0,   "green": 0.0,   "blue": 0.0}
+
+          # ── STEP 1 — cell formatting ──────────────────────────────────────────
+          fmt_requests = [{
+              "repeatCell": {
+                  "range": cr(0, 0, 1, TOTAL_COLS),
+                  "cell": {"userEnteredFormat": {
+                      "backgroundColor": DARK_BG,
+                      "textFormat": {"bold": True, "foregroundColor": WHITE, "fontSize": 10},
+                      "horizontalAlignment": "CENTER",
+                      "verticalAlignment": "MIDDLE",
+                  }},
+                  "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+              }
+          }]
+
+          for r in feature_row_indices:
+              fmt_requests.append({
+                  "repeatCell": {
+                      "range": cr(r, 0, r + 1, TOTAL_COLS),
+                      "cell": {"userEnteredFormat": {
+                          "backgroundColor": YELLOW_BG,
+                          "textFormat": {"bold": True, "foregroundColor": BLACK, "fontSize": 10},
+                          "horizontalAlignment": "LEFT",
+                          "verticalAlignment": "MIDDLE",
+                      }},
+                      "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                  }
+              })
+
+          if tc_row_indices:
+              first_tc = tc_row_indices[0]
+              last_tc  = tc_row_indices[-1] + 1
+              for col in (1, 2, 3):  # Run, Type, Status
+                  fmt_requests.append({
+                      "repeatCell": {
+                          "range": cr(first_tc, col, last_tc, col + 1),
+                          "cell": {"userEnteredFormat": {
+                              "horizontalAlignment": "CENTER",
+                              "verticalAlignment": "MIDDLE",
+                          }},
+                          "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)",
+                      }
+                  })
+
+          sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": fmt_requests}).execute()
+          print("✅ Cell formatting applied.")
+
+          # ── STEP 2 — data validation (checkbox + dropdowns) ───────────────────
+          if tc_row_indices:
+              val_requests = [
+                  {"setDataValidation": {"range": cr(first_tc, 1, last_tc, 2), "rule": {
+                      "condition": {"type": "BOOLEAN"}, "showCustomUi": True, "strict": True}}},
+                  {"setDataValidation": {"range": cr(first_tc, 2, last_tc, 3), "rule": {
+                      "condition": {"type": "ONE_OF_LIST", "values": [
+                          {"userEnteredValue": "Existing"}, {"userEnteredValue": "New Feature"}]},
+                      "showCustomUi": True, "strict": True}}},
+                  {"setDataValidation": {"range": cr(first_tc, 3, last_tc, 4), "rule": {
+                      "condition": {"type": "ONE_OF_LIST", "values": [
+                          {"userEnteredValue": "Fail"}, {"userEnteredValue": "Pass"}]},
+                      "showCustomUi": True, "strict": True}}},
+              ]
+              sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": val_requests}).execute()
+              print("✅ Data validation applied.")
+
+          # ── STEP 3 — conditional formatting (chip colors) ─────────────────────
+          if tc_row_indices:
+              cond_requests = [
+                  {"addConditionalFormatRule": {"index": 0, "rule": {
+                      "ranges": [cr(first_tc, 2, last_tc, 3)],
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Existing"}]},
+                          "format": {"backgroundColor": GRAY_BG, "textFormat": {"bold": True, "foregroundColor": BLACK}},
+                      }}}},
+                  {"addConditionalFormatRule": {"index": 1, "rule": {
+                      "ranges": [cr(first_tc, 2, last_tc, 3)],
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "New Feature"}]},
+                          "format": {"backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957},
+                                     "textFormat": {"bold": True, "foregroundColor": BLACK}},
+                      }}}},
+                  {"addConditionalFormatRule": {"index": 2, "rule": {
+                      "ranges": [cr(first_tc, 3, last_tc, 4)],
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Fail"}]},
+                          "format": {"backgroundColor": RED_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
+                      }}}},
+                  {"addConditionalFormatRule": {"index": 3, "rule": {
+                      "ranges": [cr(first_tc, 3, last_tc, 4)],
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Pass"}]},
+                          "format": {"backgroundColor": GREEN_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
+                      }}}},
+              ]
+              sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": cond_requests}).execute()
+              print("✅ Conditional formatting applied.")
+
+          # ── STEP 4 — write data (after validation, so True renders checked) ───
+          sheets.values().update(
+              spreadsheetId=SPREADSHEET,
+              range=f"'{sheet_name}'!A1",
+              valueInputOption="RAW",
+              body={"values": all_rows},
+          ).execute()
+          print("✅ Data written.")
+
+          # ── STEP 5 — auto-resize A-E + freeze header row ──────────────────────
+          sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": [
+              {"autoResizeDimensions": {"dimensions": {
+                  "sheetId": new_sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 5}}},
+              {"updateSheetProperties": {
+                  "properties": {"sheetId": new_sheet_id, "gridProperties": {"frozenRowCount": 1}},
+                  "fields": "gridProperties.frozenRowCount"}},
+          ]}).execute()
+          print("✅ Auto-resize and freeze applied.")
+
+          print(f"\n🎉 Exported {total_failed} failed test class(es) to sheet '{sheet_name}'.")
+          PYEOF
+        env:
+          GSHEET_SERVICE_ACCOUNT: ${{ secrets.IOS_GSHEET_SERVICE_ACCOUNT }}
+          GSHEET_SPREADSHEET_ID: ${{ secrets.IOS_GSHEET_SPREADSHEET_ID }}
+          TEST_RUN_JSON: ${{ env.PATH_TEST_SUITE }}
+        shell: bash
+
       # -------------------- ALLURE 3 HISTORY (trend persistence) --------------------
-      # Allure 3 stores history as a single JSONL file (was a whole dir in Allure 2).
-      # We persist it across runs in the `allure-history` branch.
       - name: Get Allure history
         if: always()
         uses: actions/checkout@v4
@@ -540,9 +770,6 @@ jobs:
         if: always()
         run: echo '${{ secrets.IOS_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
 
-      # w9jds/firebase-action is a Docker container action — container actions only
-      # run on Linux runners, and this job runs on macOS (required for Xcode). Use
-      # the Firebase CLI directly via npx instead.
       - name: Deploy Allure Report to Firebase Hosting
         if: always()
         run: npx --yes firebase-tools@latest deploy --only hosting --project "$IOS_FIREBASE_PROJECT_ID"
@@ -600,14 +827,28 @@ jobs:
               f.write(payload)
           PYEOF
 
-          curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
+          curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
             -H "Content-Type: application/json" \
             -d @payload.json
+        shell: bash
+
+      # Same directory-flattening quirk as the shard uploads (see "Package
+      # result bundle for upload" in the test job): upload-artifact drops the
+      # leaf directory's own name, so uploading TestResult.xcresult directly
+      # would give downloaders a pile of loose files instead of a bundle they
+      # can double-click/xcrun against. Wrap it first.
+      - name: Package merged result bundle for upload
+        if: always()
+        run: |
+          mkdir -p final-payload
+          cp -r TestResult.xcresult final-payload/ 2>/dev/null \
+            || echo "⚠️ No merged TestResult.xcresult to package."
         shell: bash
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: UI Test Result
-          path: TestResult.xcresult
+          path: final-payload
           retention-days: 7
+          if-no-files-found: warn
