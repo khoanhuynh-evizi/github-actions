@@ -403,6 +403,7 @@ jobs:
               capture_output=True, text=True,
           )
           failed_classes = set()
+          data = None
           try:
               data = json.loads(proc.stdout)
 
@@ -421,7 +422,24 @@ jobs:
               print(proc.stdout[:2000])
 
           if not failed_classes:
-              print("No failed test classes resolved from xcresult — skipping Google Sheets export.")
+              # The schema this parser assumes ("result" field containing
+              # "fail", leaf's immediate parent = class name) hasn't been
+              # confirmed against real xcresulttool output yet. Dump the full
+              # node tree (name/nodeType/result at every level) so the actual
+              # schema is visible in the log instead of guessing again blind.
+              print("No failed test classes resolved via the primary parser — dumping raw tree for diagnosis:")
+              print("---- xcresulttool test-results tree ----")
+              if data is not None:
+                  def dump(node, depth=0):
+                      print("  " * depth + f"nodeType={node.get('nodeType')!r} result={node.get('result')!r} name={node.get('name')!r}")
+                      for child in (node.get("children") or []):
+                          dump(child, depth + 1)
+                  for root in data.get("testNodes", []):
+                      dump(root)
+              else:
+                  print("(JSON did not parse at all — see parse error above)")
+              print("---- end tree dump ----")
+              print("Skipping Google Sheets export for this run.")
               raise SystemExit(0)
 
           feature_map = OrderedDict()
