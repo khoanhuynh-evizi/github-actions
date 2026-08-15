@@ -300,16 +300,33 @@ jobs:
         if: always()
         run: |
           shopt -s nullglob
-          bundles=(results/*.xcresult)
+          candidates=(results/*.xcresult)
+
+          # xcodebuild writes the xcresult bundle incrementally while the run
+          # is in progress. If a shard's xcodebuild process gets killed
+          # mid-run instead of exiting normally (simulator crash, runner
+          # timeout, OOM), the bundle can be left on disk without a
+          # finalized Info.plist — present, but not a valid result bundle.
+          # `xcresulttool merge` aborts entirely on the first bad bundle, so
+          # validate each one up front and merge only the usable ones
+          # instead of losing every shard's results over one bad shard.
+          bundles=()
+          for b in "${candidates[@]}"; do
+            if [ -f "$b/Info.plist" ]; then
+              bundles+=("$b")
+            else
+              echo "⚠️ Skipping corrupted/incomplete bundle (no Info.plist): $b"
+            fi
+          done
+
           if [ "${#bundles[@]}" -eq 0 ]; then
-            echo "❌ No xcresult bundles downloaded from any shard/job — nothing to merge"
+            echo "❌ No usable xcresult bundles downloaded from any shard/job — nothing to merge"
           elif [ "${#bundles[@]}" -eq 1 ]; then
-            echo "Only one bundle — copying as-is: ${bundles[0]}"
+            echo "Only one usable bundle — copying as-is: ${bundles[0]}"
             cp -r "${bundles[0]}" TestResult.xcresult
           else
             echo "Merging ${#bundles[@]} xcresult bundle(s): ${bundles[*]}"
-            xcrun xcresulttool merge "${bundles[@]}" --output-path TestResult.xcresult \
-              || xcrun xcresulttool merge --legacy "${bundles[@]}" --output-path TestResult.xcresult
+            xcrun xcresulttool merge "${bundles[@]}" --output-path TestResult.xcresult
           fi
         shell: bash
 
