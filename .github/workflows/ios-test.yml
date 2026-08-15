@@ -862,7 +862,7 @@ jobs:
               f.write(payload)
           PYEOF
 
-          curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
+          curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
             -H "Content-Type: application/json" \
             -d @payload.json
         shell: bash
