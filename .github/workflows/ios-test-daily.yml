@@ -136,17 +136,34 @@ jobs:
             exit 1
           fi
 
-          JSON=$(xcrun xcresulttool get --path "$RESULT_PATH" --format json)
+          # `xcresulttool get` (default "object" subcommand, used previously here) is
+          # deprecated on Xcode 16+, and its testsCount/failureCount/skippedCount
+          # fields are duplicated per repetition — with run-testsuite.sh's
+          # -retry-tests-on-failure/-test-iterations, a test that fails once then
+          # passes on retry got counted as two separate test runs (one fail, one
+          # pass) instead of one final pass.
+          #
+          # The current "test-results summary" API instead reports each test's
+          # FINAL result only — a test retried once and passing the second time is
+          # counted once as passed, matching what Xcode's own Test Report shows.
+          SUMMARY_JSON=$(xcrun xcresulttool get test-results summary --path "$RESULT_PATH" --compact 2>&1)
+          TOTAL=$(echo "$SUMMARY_JSON" | jq '.totalTestCount' 2>/dev/null)
 
-          TOTAL=$(echo "$JSON" | jq '[.. | objects | select(has("testsCount")) | .testsCount] | max')
-          FAILED=$(echo "$JSON" | jq '[.. | objects | select(has("failureCount")) | .failureCount] | max')
-          SKIPPED=$(echo "$JSON" | jq '[.. | objects | select(has("skippedCount")) | .skippedCount] | max')
+          if [ -z "$TOTAL" ] || [ "$TOTAL" = "null" ] || [ "$TOTAL" = "0" ]; then
+            echo "❌ xcresult has no recorded tests"
+            echo "$SUMMARY_JSON"
+            exit 1
+          fi
 
-          PASSED=$((TOTAL - FAILED - SKIPPED))
+          PASSED=$(echo "$SUMMARY_JSON" | jq '.passedTests  // 0')
+          FAILED=$(echo "$SUMMARY_JSON" | jq '.failedTests  // 0')
+          SKIPPED=$(echo "$SUMMARY_JSON" | jq '.skippedTests // 0')
 
           echo "passed=$PASSED" >> $GITHUB_OUTPUT
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
+          echo "Reporting counts → Passed=$PASSED Failed=$FAILED Skipped=$SKIPPED Total=$TOTAL"
 
       # -------------------- UPLOAD ARTIFACT --------------------
       - name: Upload xcresult
