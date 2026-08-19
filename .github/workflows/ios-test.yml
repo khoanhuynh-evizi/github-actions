@@ -103,6 +103,7 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+          import random
           import re
 
           list_tests = os.environ.get("LIST_TESTS", "").strip()
@@ -119,6 +120,14 @@ jobs:
                           if tc.get("enabled"):
                               names.append(tc["name"])
               print(f"Using {len(names)} enabled test(s) from testRun.json")
+
+          # Shuffle before splitting into shards. testRun.json lists tests
+          # grouped by feature, so round-robin on the declared order tends to
+          # put related tests (often sharing a test account) shard-adjacent
+          # or even in the same shard — shuffling spreads that risk out
+          # differently each run instead of hitting the same fixed pairing
+          # every time.
+          random.shuffle(names)
 
           n = max(1, int(os.environ["SHARD_COUNT"]))
           n = min(n, len(names)) if names else n
@@ -242,7 +251,12 @@ jobs:
       matrix:
         shard: ${{ fromJson(needs.plan.outputs.shards) }}
     runs-on: ${{ github.event.inputs.runner_type || 'macos-latest' }}
-    timeout-minutes: 300
+    # 360 is the actual ceiling: GitHub kills any job on a GitHub-hosted
+    # runner at 6h regardless of what's set here, so this value is already
+    # the max useful one — a full-suite shard won't get more room by raising
+    # it further. If a shard genuinely needs longer than this, the fix is
+    # more shards (smaller test count each), not a bigger timeout.
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@v4
