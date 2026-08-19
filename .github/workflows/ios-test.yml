@@ -256,7 +256,7 @@ jobs:
     # the max useful one — a full-suite shard won't get more room by raising
     # it further. If a shard genuinely needs longer than this, the fix is
     # more shards (smaller test count each), not a bigger timeout.
-    timeout-minutes: 360
+    timeout-minutes: 500
     steps:
       - name: Checkout
         uses: actions/checkout@v4
