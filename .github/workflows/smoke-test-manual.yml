@@ -327,9 +327,10 @@ jobs:
         pip install --quiet google-auth google-auth-httplib2 google-api-python-client
 
         python3 << 'PYEOF'
-        import os, re, json, datetime
+        import os, re, json, time, random, datetime
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
 
         # ── Config ────────────────────────────────────────────────────────────
         SA_JSON     = os.environ["GSHEET_SERVICE_ACCOUNT"]
@@ -342,6 +343,23 @@ jobs:
                       json.loads(SA_JSON), scopes=SCOPES)
         service = build("sheets", "v4", credentials=creds)
         sheets  = service.spreadsheets()
+
+        # ── Retry helper for transient Google API errors (429/500/503) ────────
+        RETRYABLE_STATUSES = {429, 500, 503}
+
+        def execute_with_retry(request, max_retries=5, base_delay=2):
+            for attempt in range(max_retries + 1):
+                try:
+                    return request.execute()
+                except HttpError as e:
+                    status = getattr(e.resp, "status", None)
+                    if status in RETRYABLE_STATUSES and attempt < max_retries:
+                        delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                        print(f"⚠️  Google Sheets API returned {status}, retrying in {delay:.1f}s "
+                              f"(attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(delay)
+                        continue
+                    raise
 
         # ── Parse failed test cases grouped by feature ────────────────────────
         prefix_re   = re.compile(r'^\[.*?\]\s*')
@@ -450,7 +468,7 @@ jobs:
         today     = datetime.datetime.now(tz)
         base_name = today.strftime("%m/%d")
 
-        meta     = sheets.get(spreadsheetId=SPREADSHEET).execute()
+        meta     = execute_with_retry(sheets.get(spreadsheetId=SPREADSHEET))
         existing = {s["properties"]["title"] for s in meta["sheets"]}
 
         sheet_name = base_name
@@ -480,7 +498,7 @@ jobs:
         total_rows = len(all_rows)
 
         # ── Create the new sheet ──────────────────────────────────────────────
-        resp = sheets.batchUpdate(
+        resp = execute_with_retry(sheets.batchUpdate(
             spreadsheetId=SPREADSHEET,
             body={"requests": [{"addSheet": {"properties": {
                 "title": sheet_name,
@@ -490,7 +508,7 @@ jobs:
                     "columnCount": TOTAL_COLS
                 }
             }}}]}
-        ).execute()
+        ))
         new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
         print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
 
@@ -584,8 +602,8 @@ jobs:
                 }
             })
 
-        sheets.batchUpdate(spreadsheetId=SPREADSHEET,
-                           body={"requests": fmt_requests}).execute()
+        execute_with_retry(sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                           body={"requests": fmt_requests}))
         print("✅ Cell formatting applied.")
 
         # ─────────────────────────────────────────────────────────────────────
@@ -642,8 +660,8 @@ jobs:
                     }
                 }
             ]
-            sheets.batchUpdate(spreadsheetId=SPREADSHEET,
-                               body={"requests": val_requests}).execute()
+            execute_with_retry(sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                               body={"requests": val_requests}))
             print("✅ Data validation applied.")
 
         # ─────────────────────────────────────────────────────────────────────
@@ -732,26 +750,26 @@ jobs:
                     }
                 }
             ]
-            sheets.batchUpdate(spreadsheetId=SPREADSHEET,
-                               body={"requests": cond_requests}).execute()
+            execute_with_retry(sheets.batchUpdate(spreadsheetId=SPREADSHEET,
+                               body={"requests": cond_requests}))
             print("✅ Conditional formatting applied.")
 
         # ─────────────────────────────────────────────────────────────────────
         # STEP 4 — Write all row data
         # Writing AFTER validation so boolean True renders as checked checkbox
         # ─────────────────────────────────────────────────────────────────────
-        sheets.values().update(
+        execute_with_retry(sheets.values().update(
             spreadsheetId=SPREADSHEET,
             range=f"'{sheet_name}'!A1",
             valueInputOption="RAW",
             body={"values": all_rows}
-        ).execute()
+        ))
         print("✅ Data written.")
 
         # ─────────────────────────────────────────────────────────────────────
         # STEP 5 — Final touches: auto-resize A-E + freeze header row
         # ─────────────────────────────────────────────────────────────────────
-        sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": [
+        execute_with_retry(sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": [
             {
                 "autoResizeDimensions": {
                     "dimensions": {
@@ -771,7 +789,7 @@ jobs:
                     "fields": "gridProperties.frozenRowCount"
                 }
             }
-        ]}).execute()
+        ]}))
         print("✅ Auto-resize and freeze applied.")
 
         print(f"\n🎉 Exported {total_failed} failed test case(s) to sheet '{sheet_name}'.")

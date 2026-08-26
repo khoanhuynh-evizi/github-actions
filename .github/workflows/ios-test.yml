@@ -38,6 +38,14 @@ on:
         default: '2'
         type: string
 
+concurrency:
+  # Keyed on the branch under test (not github.ref, which for
+  # workflow_dispatch is always the ref the workflow file itself lives on)
+  # so two runs against the SAME ios-app branch don't pile up 4+ shard jobs
+  # each, but runs against different branches don't block each other.
+  group: ios-ui-test-${{ github.event.inputs.testing-branch || 'default' }}
+  cancel-in-progress: false
+
 env:
   PATH_TEST_SUITE: record360UITests/Resources/testRun.json
   TEST_BUNDLE: record360UITests
@@ -46,7 +54,6 @@ env:
 permissions:
   contents: read
   actions: read
-  checks: write
 
 jobs:
   # -------------------- TIMER --------------------
@@ -65,6 +72,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       shards: ${{ steps.split.outputs.shards }}
+      simulator_name: ${{ steps.meta.outputs.simulator_name }}
+      ios_version: ${{ steps.meta.outputs.ios_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -76,15 +85,25 @@ jobs:
             record360UITests/Resources/testRun.json
           sparse-checkout-cone-mode: false
 
+      # Single source of truth for the simulator name/OS version default, so
+      # the build/test/report jobs below don't each re-derive the same
+      # `inputs.x || 'default'` expression from scratch.
+      - id: meta
+        run: |
+          echo "simulator_name=$(echo '${{ inputs.simulator-name || 'iPhone 17' }}' | xargs)" >> "$GITHUB_OUTPUT"
+          echo "ios_version=$(echo '${{ inputs.ios-version || '26.2' }}' | xargs)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
       - id: split
         env:
-          SHARD_COUNT: ${{ inputs.shard_count || '6' }}
+          SHARD_COUNT: ${{ inputs.shard_count || '2' }}
           TEST_RUN_JSON: ${{ env.PATH_TEST_SUITE }}
           LIST_TESTS: ${{ inputs.list_tests }}
         run: |
           python3 - <<'PY'
           import json
           import os
+          import random
           import re
 
           list_tests = os.environ.get("LIST_TESTS", "").strip()
@@ -101,6 +120,14 @@ jobs:
                           if tc.get("enabled"):
                               names.append(tc["name"])
               print(f"Using {len(names)} enabled test(s) from testRun.json")
+
+          # Shuffle before splitting into shards. testRun.json lists tests
+          # grouped by feature, so round-robin on the declared order tends to
+          # put related tests (often sharing a test account) shard-adjacent
+          # or even in the same shard — shuffling spreads that risk out
+          # differently each run instead of hitting the same fixed pairing
+          # every time.
+          random.shuffle(names)
 
           n = max(1, int(os.environ["SHARD_COUNT"]))
           n = min(n, len(names)) if names else n
@@ -122,16 +149,16 @@ jobs:
           PY
         shell: bash
 
-  # -------------------- SHARDED TEST EXECUTION --------------------
-  test:
-    name: "Test shard ${{ matrix.shard.index }}"
-    needs: plan
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJson(needs.plan.outputs.shards) }}
+  # -------------------- BUILD ONCE FOR ALL SHARDS --------------------
+  # Previously every shard ran its own `pod install --repo-update` + full
+  # `xcodebuild test` (build+test combined), so a 4-shard run paid for 4
+  # full compiles/pod installs instead of 1. This job builds the UI test
+  # bundle exactly once; each `test` shard below downloads the result and
+  # runs `test-without-building` against it instead of rebuilding.
+  build:
+    name: Build for testing
     runs-on: ${{ github.event.inputs.runner_type || 'macos-latest' }}
-    timeout-minutes: 300
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -150,24 +177,6 @@ jobs:
         with:
           xcode-version: ${{ inputs.xcode-version || '26.2' }}
 
-      - name: Set simulator environment
-        run: |
-          echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 17' }}' | xargs)" >> $GITHUB_ENV
-          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '26.2' }}' | xargs)" >> $GITHUB_ENV
-          echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
-          echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
-        shell: bash
-
-      - name: Disable simulator hardware keyboard
-        run: defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
-        shell: bash
-
-      - uses: futureware-tech/simulator-action@v4
-        with:
-          model: ${{ inputs.simulator-name || 'iPhone 17' }}
-          os: 'iOS'
-          os_version: ${{ inputs.ios-version || '26.2' }}
-
       - name: Cache CocoaPods downloads
         uses: actions/cache@v4
         with:
@@ -180,7 +189,8 @@ jobs:
         run: |
           # customers.pspdfkit.com (PSPDFKit's binary CDN) occasionally resets the
           # connection mid-download from GitHub-hosted runners — retry instead of
-          # failing the whole shard on a transient blip.
+          # failing the build on a transient blip. This now runs once for the
+          # whole matrix instead of once per shard.
           for attempt in 1 2 3; do
             if pod install --repo-update && pod update Record360SDK; then
               break
@@ -201,14 +211,115 @@ jobs:
       - name: Install xcpretty from https://github.com/xcpretty
         run: |
           echo "source 'https://rubygems.org'" > Gemfile
-          echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git', branch: 'master'" >> Gemfile
+          echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git', tag: 'v0.4.1'" >> Gemfile
+          bundle install
+          bundle exec xcpretty --version
+
+      - name: Build for testing
+        run: |
+          chmod +x ./ci_scripts/build-for-testing.sh
+          ./ci_scripts/build-for-testing.sh
+        shell: bash
+
+      - name: Package build products for shards
+        run: |
+          XCTESTRUN=$(find DerivedData/Build/Products -maxdepth 1 -name "*.xctestrun" | head -1)
+          if [ -z "$XCTESTRUN" ]; then
+            echo "❌ No .xctestrun produced by build-for-testing — nothing for shards to run against"
+            exit 1
+          fi
+          echo "Found xctestrun: $XCTESTRUN"
+          # tar, not upload-artifact's own zipping, so symlinks inside the
+          # built .app/frameworks survive the round trip intact (same reason
+          # xcresult bundles get tarred before upload further down).
+          tar -czf build-products.tar.gz -C DerivedData/Build Products
+          ls -la build-products.tar.gz
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-products
+          path: build-products.tar.gz
+          retention-days: 1
+
+  # -------------------- SHARDED TEST EXECUTION --------------------
+  test:
+    name: "Test shard ${{ matrix.shard.index }}"
+    needs: [plan, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.plan.outputs.shards) }}
+    runs-on: ${{ github.event.inputs.runner_type || 'macos-latest' }}
+    # 360 is the actual ceiling: GitHub kills any job on a GitHub-hosted
+    # runner at 6h regardless of what's set here, so this value is already
+    # the max useful one — a full-suite shard won't get more room by raising
+    # it further. If a shard genuinely needs longer than this, the fix is
+    # more shards (smaller test count each), not a bigger timeout.
+    timeout-minutes: 500
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{secrets.WDIO_ACCESS_TOKEN}}
+          repository: ${{secrets.WDIO_IOS_REPOS}}
+          ref: ${{ github.event.inputs.testing-branch || secrets.DEFAULT_BRANCH_IOS }}
+          # Shards no longer build from source (see the `build` job above),
+          # so they only need the runner scripts — not Podfile/source/etc.
+          sparse-checkout: |
+            ci_scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ inputs.xcode-version || '26.2' }}
+
+      - name: Set simulator environment
+        run: |
+          echo "SIMULATOR_NAME=${{ needs.plan.outputs.simulator_name }}" >> $GITHUB_ENV
+          echo "IOS_VERSION=${{ needs.plan.outputs.ios_version }}" >> $GITHUB_ENV
+          echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
+          echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Disable simulator hardware keyboard
+        run: defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
+        shell: bash
+
+      - uses: futureware-tech/simulator-action@v4
+        with:
+          model: ${{ needs.plan.outputs.simulator_name }}
+          os: 'iOS'
+          os_version: ${{ needs.plan.outputs.ios_version }}
+
+      - name: Download build products
+        uses: actions/download-artifact@v4
+        with:
+          name: build-products
+
+      - name: Extract build products
+        run: |
+          mkdir -p DerivedData/Build
+          tar -xzf build-products.tar.gz -C DerivedData/Build
+          XCTESTRUN=$(find DerivedData/Build/Products -maxdepth 1 -name "*.xctestrun" | head -1)
+          if [ -z "$XCTESTRUN" ]; then
+            echo "❌ No .xctestrun found after extracting build products"
+            exit 1
+          fi
+          echo "XCTESTRUN_PATH=$XCTESTRUN" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Install xcpretty from https://github.com/xcpretty
+        run: |
+          echo "source 'https://rubygems.org'" > Gemfile
+          echo "gem 'xcpretty', git: 'https://github.com/xcpretty/xcpretty.git', tag: 'v0.4.1'" >> Gemfile
           bundle install
           bundle exec xcpretty --version
 
       - name: Run shard tests
         run: |
-          chmod +x ./ci_scripts/run-tests.sh
-          ./ci_scripts/run-tests.sh --testBundle="$TEST_BUNDLE" --list-tests="${{ matrix.shard.tests }}" --deviceName="${SIMULATOR_NAME}"
+          chmod +x ./ci_scripts/run-tests-prebuilt.sh
+          ./ci_scripts/run-tests-prebuilt.sh --testBundle="$TEST_BUNDLE" --xctestrun="$XCTESTRUN_PATH" --list-tests="${{ matrix.shard.tests }}" --deviceName="${SIMULATOR_NAME}"
         shell: bash
 
       - name: Package result bundle for upload
@@ -238,9 +349,10 @@ jobs:
   # -------------------- REPORT & NOTIFY --------------------
   report:
     name: Report & Notify
-    needs: [start, plan, test]
+    needs: [start, plan, build, test]
     if: always()
     runs-on: ${{ github.event.inputs.runner_type || 'macos-latest' }}
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -251,11 +363,15 @@ jobs:
 
       # Only needed for the Google Chat card template below. Kept in a
       # subfolder (not root) so it can't collide with the ios-app checkout
-      # above or change how any other step resolves paths.
+      # above or change how any other step resolves paths. Sparse to just
+      # the template dir — no reason to pull the whole workflow repo for one file.
       - name: Checkout workflow repo (for Google Chat template)
         uses: actions/checkout@v4
         with:
           path: .workflow-repo
+          sparse-checkout: |
+            .github/googleChat
+          sparse-checkout-cone-mode: false
 
       # Same Xcode version as whatever generated the shard xcresults — a
       # newer/older xcresulttool than the one that produced the bundle can
@@ -267,8 +383,8 @@ jobs:
       - name: Set report metadata
         if: always()
         run: |
-          echo "SIMULATOR_NAME=$(echo '${{ inputs.simulator-name || 'iPhone 17' }}' | xargs)" >> $GITHUB_ENV
-          echo "IOS_VERSION=$(echo '${{ inputs.ios-version || '26.2' }}' | xargs)" >> $GITHUB_ENV
+          echo "SIMULATOR_NAME=${{ needs.plan.outputs.simulator_name }}" >> $GITHUB_ENV
+          echo "IOS_VERSION=${{ needs.plan.outputs.ios_version }}" >> $GITHUB_ENV
           echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
           echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
         shell: bash
