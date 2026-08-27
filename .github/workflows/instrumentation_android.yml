@@ -408,8 +408,12 @@ jobs:
           with open("tests.json") as f:
               tests = json.load(f)
 
-          # Same testRun.json feature grouping as ios-test.yml's Allure
-          # categories — maps a test class back to the feature it belongs to.
+          # Maps a test back to the feature it belongs to. testRun.json's
+          # testCases[].name is "<package>.<Class>#<method>" for classes with
+          # several @Test methods (e.g. "login.LoginTest#loginFailedWith...")
+          # or just "<package>.<Class>" for classes with a single test (e.g.
+          # "inspection.AccessingInlinePhotoControlsOnPlanLevelInTheInspection").
+          # It is NOT the bare simple class name iOS's testRun.json uses.
           feature_of = {}
           try:
               with open(TEST_RUN_JSON) as f:
@@ -420,12 +424,13 @@ jobs:
           except FileNotFoundError:
               print(f"⚠️ {TEST_RUN_JSON} not found — Allure results will have no feature grouping")
 
-          def feature_for(classname):
-              simple = classname.rsplit(".", 1)[-1]
-              if simple in feature_of:
-                  return feature_of[simple]
-              stripped = simple[:-4] if simple.endswith("Test") else simple  # testRun.json names often omit a trailing "Test"
-              return feature_of.get(stripped, "Unknown")
+          def feature_for(classname, method):
+              # JUnit's `classname` is fully qualified
+              # (com.record360.app.test.tests.login.LoginTest); testRun.json
+              # only keys on the last two segments (package.Class).
+              pkg_class = ".".join(classname.split(".")[-2:])
+              return feature_of.get(f"{pkg_class}#{method}") \
+                  or feature_of.get(pkg_class, "Unknown")
 
           STATUS_MAP = {"passed": "passed", "failed": "failed", "broken": "broken", "skipped": "skipped"}
 
@@ -445,7 +450,7 @@ jobs:
                   "stop": cursor,
                   "labels": [
                       {"name": "suite", "value": t["classname"]},
-                      {"name": "feature", "value": feature_for(t["classname"])},
+                      {"name": "feature", "value": feature_for(t["classname"], t["name"])},
                       {"name": "package", "value": t["classname"]},
                       {"name": "framework", "value": "JUnit4"},
                       {"name": "language", "value": "java"},
@@ -491,7 +496,10 @@ jobs:
           TEST_RUN_JSON = os.environ["TEST_RUN_JSON"]
           SCOPES        = ["https://www.googleapis.com/auth/spreadsheets"]
 
-          # ── Build test-class → feature map from testRun.json ─────────────────
+          # ── Build test → feature map from testRun.json ────────────────────────
+          # testCases[].name is "<package>.<Class>#<method>" for classes with
+          # several @Test methods, or just "<package>.<Class>" for classes
+          # with a single test — not the bare simple class name.
           feature_of = {}
           try:
               with open(TEST_RUN_JSON) as f:
@@ -502,12 +510,15 @@ jobs:
           except FileNotFoundError:
               print(f"⚠️ {TEST_RUN_JSON} not found — failed tests will be grouped under 'Unknown'")
 
-          def feature_for(classname):
-              simple = classname.rsplit(".", 1)[-1]
-              if simple in feature_of:
-                  return feature_of[simple]
-              stripped = simple[:-4] if simple.endswith("Test") else simple
-              return feature_of.get(stripped, "Unknown")
+          def pkg_class_of(classname):
+              # JUnit's `classname` is fully qualified
+              # (com.record360.app.test.tests.login.LoginTest); testRun.json
+              # only keys on the last two segments (package.Class).
+              return ".".join(classname.split(".")[-2:])
+
+          def feature_for(pkg_class, method):
+              return feature_of.get(f"{pkg_class}#{method}") \
+                  or feature_of.get(pkg_class, "Unknown")
 
           # ── Load failed tests from tests.json ─────────────────────────────────
           with open("tests.json") as f:
@@ -517,9 +528,9 @@ jobs:
           for t in tests:
               if t["status"] not in ("failed", "broken"):
                   continue
-              simple_class = t["classname"].rsplit(".", 1)[-1]
-              label = f'{simple_class}.{t["name"]}'
-              feature_map.setdefault(feature_for(t["classname"]), []).append(label)
+              pkg_class = pkg_class_of(t["classname"])
+              label = f'{pkg_class}#{t["name"]}'
+              feature_map.setdefault(feature_for(pkg_class, t["name"]), []).append(label)
 
           if not feature_map:
               print("No failed test cases found — skipping Google Sheets export.")
