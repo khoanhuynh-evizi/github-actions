@@ -1,0 +1,51 @@
+{
+  "cardsV2": [
+    {
+      "cardId": "android-report",
+      "card": {
+        "header": {
+          "title": "${STATUS_ICON} Record360 - Android Automation Report",
+          "subtitle": "Instrumentation Tests · ${DATE_TIME}"
+        },
+        "sections": [
+          {
+            "widgets": [
+              {
+                "buttonList": {
+                  "buttons": [
+                    {
+                      "text": "📄 VIEW ALLURE REPORT",
+                      "onClick": {
+                        "openLink": {
+                          "url": "${REPORT_URL}"
+                        }
+                      }
+                    },
+                    {
+                      "text": "▶️ OPEN GITHUB ACTION",
+                      "onClick": {
+                        "openLink": {
+                          "url": "${RUN_URL}"
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "textParagraph": {
+                  "text": "<b>Test Summary</b>"
+                }
+              },
+              {
+                "textParagraph": {
+                  "text": "✅ <b>Passed:</b> ${PASSED} (${PASS_RATE}%)<br>❌ <b>Failed:</b> ${FAILED}<br>⏭️ <b>Skipped:</b> ${SKIPPED}<br>📦 <b>Total:</b> ${TOTAL}<br>⏱️ <b>Duration:</b> ${DURATION}<br>📱 <b>Device:</b> ${DEVICE}<br>🌿 <b>Branch:</b> <code>${BRANCH}</code><br><b>Status:</b> <font color=\"${STATUS_COLOR}\"><b>${STATUS}</b></font>"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

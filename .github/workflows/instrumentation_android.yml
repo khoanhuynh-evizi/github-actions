@@ -46,6 +46,7 @@ on:
         default: 'google_apis'
 env:
   PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
+  ANDROID_FIREBASE_PROJECT_ID: ${{ secrets.ANDROID_FIREBASE_PROJECT_ID }}
 
 permissions:
   contents: read
@@ -53,6 +54,16 @@ permissions:
   checks: write
 
 jobs:
+  # -------------------- TIMER --------------------
+  start:
+    name: Start timer
+    runs-on: ubuntu-latest
+    outputs:
+      start_time: ${{ steps.t.outputs.start_time }}
+    steps:
+      - id: t
+        run: echo "start_time=$(date +%s)" >> "$GITHUB_OUTPUT"
+
   test:
     runs-on: ${{ inputs.os-version || 'ubuntu-latest' }}
     strategy:
@@ -226,3 +237,694 @@ jobs:
           reporter: java-junit
           fail-on-empty: 'false'
           fail-on-error: 'false'
+
+  # -------------------- REPORT & NOTIFY --------------------
+  # Runs on ubuntu (unlike ios-test.yml's macOS-only report job) — nothing
+  # here needs Xcode/xcresulttool. Android has no Allure adapter wired into
+  # the instrumentation run, so this converts the JUnit XML the `test` job
+  # already produces into Allure's result-file format instead of consuming
+  # a native allure-results directory.
+  report:
+    name: Report & Notify
+    needs: [start, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout testRun.json
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+          repository: ${{ secrets.WDIO_ANDROID_REPOS }}
+          ref: ${{ github.event.inputs.main-branch || 'master' }}
+          sparse-checkout: |
+            ${{ env.PATH_TEST_SUITE }}
+          sparse-checkout-cone-mode: false
+
+      # Only needed for the Google Chat card template below. Sparse to just
+      # the template dir so it can't collide with the android-app checkout
+      # above or pull in the rest of this workflow repo.
+      - name: Checkout workflow repo (for Google Chat template)
+        uses: actions/checkout@v4
+        with:
+          path: .workflow-repo
+          sparse-checkout: |
+            .github/googleChat
+          sparse-checkout-cone-mode: false
+
+      - name: Set report metadata
+        if: always()
+        run: |
+          echo "SDK_VERSION=${{ inputs.sdk-version || '35' }}" >> $GITHUB_ENV
+          echo "DEVICE_PROFILE=${{ inputs.device-profile || 'pixel_7' }}" >> $GITHUB_ENV
+          echo "DEVICE_ARCH=${{ inputs.device-arch || 'x86_64' }}" >> $GITHUB_ENV
+          echo "DEVICE_TARGET=${{ inputs.device-target || 'google_apis' }}" >> $GITHUB_ENV
+          echo "DEVICE=${{ inputs.device-profile || 'pixel_7' }} · API ${{ inputs.sdk-version || '35' }} (${{ inputs.device-arch || 'x86_64' }}/${{ inputs.device-target || 'google_apis' }})" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Compute test duration
+        if: always()
+        run: |
+          START=${{ needs.start.outputs.start_time }}
+          NOW=$(date +%s)
+          DURATION=$(( NOW - START ))
+          DURATION_STR="${DURATION}s"
+          if [ "$DURATION" -ge 60 ]; then
+            DURATION_STR="$(( DURATION / 60 ))m $(( DURATION % 60 ))s"
+          fi
+          echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Download test reports
+        if: always()
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: test-suite-*
+          path: results
+          merge-multiple: true
+
+      # -------------------- PARSE JUNIT XML --------------------
+      # Parsed once here; both the Allure conversion step and the Google
+      # Sheets export step below reuse tests.json instead of each
+      # re-parsing the XML their own way.
+      - name: Parse JUnit XML reports
+        if: always()
+        run: |
+          python3 << 'PYEOF'
+          import glob
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+
+          # Matches the same report location the "Generate reports" step
+          # (dorny/test-reporter) already reads from — the raw per-device
+          # JUnit XML, not the duplicate formatted copy under
+          # app/build/reports/androidTests/connected/.
+          PRIMARY_GLOB  = "results/outputs/*/connected/**/flavors/**/*.xml"
+          FALLBACK_GLOB = "results/outputs/**/*.xml"
+
+          files = glob.glob(PRIMARY_GLOB, recursive=True)
+          if not files:
+              print(f"⚠️ No files matched {PRIMARY_GLOB!r} — falling back to {FALLBACK_GLOB!r}")
+              files = glob.glob(FALLBACK_GLOB, recursive=True)
+          print(f"Found {len(files)} JUnit XML file(s)")
+
+          tests = []
+          for path in files:
+              try:
+                  root = ET.parse(path).getroot()
+              except ET.ParseError as e:
+                  print(f"⚠️ Skipping unparsable XML {path}: {e}")
+                  continue
+
+              suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+              for suite in suites:
+                  if suite.tag != "testsuite":
+                      continue
+                  for tc in suite.findall("testcase"):
+                      classname = tc.get("classname") or suite.get("name") or "Unknown"
+                      name      = tc.get("name", "unknown")
+                      time_s    = tc.get("time", "0")
+
+                      failure = tc.find("failure")
+                      error   = tc.find("error")
+                      skipped = tc.find("skipped")
+                      if failure is not None:
+                          status, node = "failed", failure
+                      elif error is not None:
+                          status, node = "broken", error
+                      elif skipped is not None:
+                          status, node = "skipped", skipped
+                      else:
+                          status, node = "passed", None
+
+                      tests.append({
+                          "classname": classname,
+                          "name": name,
+                          "time": time_s,
+                          "status": status,
+                          "message": (node.get("message", "") if node is not None else ""),
+                          "trace": ((node.text or "").strip() if node is not None else ""),
+                      })
+
+          with open("tests.json", "w") as f:
+              json.dump(tests, f)
+
+          passed  = sum(1 for t in tests if t["status"] == "passed")
+          failed  = sum(1 for t in tests if t["status"] in ("failed", "broken"))
+          skipped = sum(1 for t in tests if t["status"] == "skipped")
+          total   = len(tests)
+          pass_rate = round(passed * 100 / total, 1) if total else 0.0
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"SUITE_PASSED={passed}\n")
+              f.write(f"SUITE_FAILED={failed}\n")
+              f.write(f"SUITE_SKIPPED={skipped}\n")
+              f.write(f"SUITE_TOTAL={total}\n")
+              f.write(f"SUITE_PASS_RATE={pass_rate}\n")
+
+          print(f"Reporting counts → Passed={passed} Failed={failed} Skipped={skipped} Total={total} PassRate={pass_rate}%")
+          if total == 0:
+              print("❌ No JUnit XML tests parsed — the run likely crashed before producing a report")
+          PYEOF
+        shell: bash
+
+      # -------------------- CONVERT JUNIT XML → ALLURE RESULTS --------------------
+      - name: Convert to Allure results
+        if: always()
+        run: |
+          python3 << 'PYEOF'
+          import hashlib
+          import json
+          import os
+          import time
+          import uuid
+
+          OUT_DIR       = "allure-results"
+          TEST_RUN_JSON = os.environ["TEST_RUN_JSON"]
+          os.makedirs(OUT_DIR, exist_ok=True)
+
+          with open("tests.json") as f:
+              tests = json.load(f)
+
+          # Same testRun.json feature grouping as ios-test.yml's Allure
+          # categories — maps a test class back to the feature it belongs to.
+          feature_of = {}
+          try:
+              with open(TEST_RUN_JSON) as f:
+                  suite = json.load(f)
+              for feature in suite.get("testsuite", []):
+                  for tc in feature.get("testCases", []):
+                      feature_of[tc["name"]] = feature["name"]
+          except FileNotFoundError:
+              print(f"⚠️ {TEST_RUN_JSON} not found — Allure results will have no feature grouping")
+
+          def feature_for(classname):
+              simple = classname.rsplit(".", 1)[-1]
+              if simple in feature_of:
+                  return feature_of[simple]
+              stripped = simple[:-4] if simple.endswith("Test") else simple  # testRun.json names often omit a trailing "Test"
+              return feature_of.get(stripped, "Unknown")
+
+          STATUS_MAP = {"passed": "passed", "failed": "failed", "broken": "broken", "skipped": "skipped"}
+
+          cursor = int(time.time() * 1000)
+          for t in tests:
+              dur_ms = max(1, int(float(t.get("time") or 0) * 1000))
+              start, cursor = cursor, cursor + dur_ms
+
+              result = {
+                  "uuid": str(uuid.uuid4()),
+                  "historyId": hashlib.md5(f'{t["classname"]}.{t["name"]}'.encode()).hexdigest(),
+                  "name": t["name"],
+                  "fullName": f'{t["classname"]}#{t["name"]}',
+                  "status": STATUS_MAP.get(t["status"], "broken"),
+                  "stage": "finished",
+                  "start": start,
+                  "stop": cursor,
+                  "labels": [
+                      {"name": "suite", "value": t["classname"]},
+                      {"name": "feature", "value": feature_for(t["classname"])},
+                      {"name": "package", "value": t["classname"]},
+                      {"name": "framework", "value": "JUnit4"},
+                      {"name": "language", "value": "java"},
+                  ],
+              }
+              if t["status"] in ("failed", "broken") and (t.get("message") or t.get("trace")):
+                  result["statusDetails"] = {
+                      "message": (t.get("message") or "")[:2000],
+                      "trace": (t.get("trace") or "")[:8000],
+                  }
+
+              with open(os.path.join(OUT_DIR, f'{result["uuid"]}-result.json'), "w") as f:
+                  json.dump(result, f)
+
+          print(f"✅ Wrote {len(tests)} Allure result file(s) to {OUT_DIR}/")
+          PYEOF
+        env:
+          TEST_RUN_JSON: ${{ env.PATH_TEST_SUITE }}
+        shell: bash
+
+      # -------------------- EXPORT FAILED TEST CASES TO GOOGLE SHEETS --------------------
+      # Same sheet layout/formatting as ios-test.yml / smoke-test-manual.yml's
+      # exports (feature header rows, checkbox + Type/Status dropdowns,
+      # colored chips) — reuses tests.json from the parse step above instead
+      # of re-reading the XML/xcresult.
+      - name: Export Failed Test Cases to Google Sheets
+        if: always() && env.SUITE_FAILED != '' && env.SUITE_FAILED != '0'
+        run: |
+          python3 -m pip install --quiet google-auth google-auth-httplib2 google-api-python-client
+
+          python3 << 'PYEOF'
+          import datetime
+          import json
+          import os
+          from collections import OrderedDict
+
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+
+          # ── Config ────────────────────────────────────────────────────────────
+          SA_JSON       = os.environ["GSHEET_SERVICE_ACCOUNT"]
+          SPREADSHEET   = os.environ["GSHEET_SPREADSHEET_ID"]
+          TEST_RUN_JSON = os.environ["TEST_RUN_JSON"]
+          SCOPES        = ["https://www.googleapis.com/auth/spreadsheets"]
+
+          # ── Build test-class → feature map from testRun.json ─────────────────
+          feature_of = {}
+          try:
+              with open(TEST_RUN_JSON) as f:
+                  suite = json.load(f)
+              for feature in suite.get("testsuite", []):
+                  for tc in feature.get("testCases", []):
+                      feature_of[tc["name"]] = feature["name"]
+          except FileNotFoundError:
+              print(f"⚠️ {TEST_RUN_JSON} not found — failed tests will be grouped under 'Unknown'")
+
+          def feature_for(classname):
+              simple = classname.rsplit(".", 1)[-1]
+              if simple in feature_of:
+                  return feature_of[simple]
+              stripped = simple[:-4] if simple.endswith("Test") else simple
+              return feature_of.get(stripped, "Unknown")
+
+          # ── Load failed tests from tests.json ─────────────────────────────────
+          with open("tests.json") as f:
+              tests = json.load(f)
+
+          feature_map = OrderedDict()
+          for t in tests:
+              if t["status"] not in ("failed", "broken"):
+                  continue
+              simple_class = t["classname"].rsplit(".", 1)[-1]
+              label = f'{simple_class}.{t["name"]}'
+              feature_map.setdefault(feature_for(t["classname"]), []).append(label)
+
+          if not feature_map:
+              print("No failed test cases found — skipping Google Sheets export.")
+              raise SystemExit(0)
+
+          total_failed = sum(len(v) for v in feature_map.values())
+          print(f"Found {total_failed} failed test case(s) across {len(feature_map)} feature(s):")
+          for feat, tcs in feature_map.items():
+              print(f"  [{feat}]")
+              for tc in tcs:
+                  print(f"    • {tc}")
+
+          # ── Auth ──────────────────────────────────────────────────────────────
+          creds   = service_account.Credentials.from_service_account_info(
+                        json.loads(SA_JSON), scopes=SCOPES)
+          service = build("sheets", "v4", credentials=creds)
+          sheets  = service.spreadsheets()
+
+          # ── Resolve target sheet name (MM/DD or MM/DD-2, MM/DD-3 …) ──────────
+          tz        = datetime.timezone(datetime.timedelta(hours=7))
+          today     = datetime.datetime.now(tz)
+          base_name = today.strftime("%m/%d")
+
+          meta     = sheets.get(spreadsheetId=SPREADSHEET).execute()
+          existing = {s["properties"]["title"] for s in meta["sheets"]}
+
+          sheet_name = base_name
+          idx = 2
+          while sheet_name in existing:
+              sheet_name = f"{base_name}-{idx}"
+              idx += 1
+
+          # ── Build row data ────────────────────────────────────────────────────
+          # Columns: A=TCs | B=Run | C=Type | D=Status | E=Note | F-Z=empty
+          TOTAL_COLS = 26
+          EMPTY      = [""] * (TOTAL_COLS - 5)
+
+          header_row          = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
+          all_rows            = [header_row]
+          feature_row_indices = []
+          tc_row_indices      = []
+
+          for feat_name, tcs in feature_map.items():
+              feature_row_indices.append(len(all_rows))
+              all_rows.append([feat_name] + [""] * (TOTAL_COLS - 1))
+              for tc in tcs:
+                  tc_row_indices.append(len(all_rows))
+                  # B=True (boolean) → renders as a checked checkbox after validation applied
+                  all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
+
+          total_rows = len(all_rows)
+
+          # ── Create the new sheet ──────────────────────────────────────────────
+          resp = sheets.batchUpdate(
+              spreadsheetId=SPREADSHEET,
+              body={"requests": [{"addSheet": {"properties": {
+                  "title": sheet_name,
+                  "index": 0,
+                  "gridProperties": {
+                      "rowCount": max(200, total_rows + 10),
+                      "columnCount": TOTAL_COLS,
+                  },
+              }}}]},
+          ).execute()
+          new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
+          print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
+
+          def cr(r1, c1, r2, c2):
+              return {"sheetId": new_sheet_id,
+                      "startRowIndex": r1, "endRowIndex": r2,
+                      "startColumnIndex": c1, "endColumnIndex": c2}
+
+          DARK_BG   = {"red": 0.2,   "green": 0.2,   "blue": 0.2}
+          YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}
+          RED_BG    = {"red": 0.863, "green": 0.196, "blue": 0.184}
+          GREEN_BG  = {"red": 0.118, "green": 0.588, "blue": 0.235}
+          GRAY_BG   = {"red": 0.851, "green": 0.851, "blue": 0.851}
+          WHITE     = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
+          BLACK     = {"red": 0.0,   "green": 0.0,   "blue": 0.0}
+
+          # ── STEP 1 — cell formatting ──────────────────────────────────────────
+          fmt_requests = [{
+              "repeatCell": {
+                  "range": cr(0, 0, 1, TOTAL_COLS),
+                  "cell": {"userEnteredFormat": {
+                      "backgroundColor": DARK_BG,
+                      "textFormat": {"bold": True, "foregroundColor": WHITE, "fontSize": 10},
+                      "horizontalAlignment": "CENTER",
+                      "verticalAlignment": "MIDDLE",
+                  }},
+                  "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+              }
+          }]
+
+          for r in feature_row_indices:
+              fmt_requests.append({
+                  "repeatCell": {
+                      "range": cr(r, 0, r + 1, TOTAL_COLS),
+                      "cell": {"userEnteredFormat": {
+                          "backgroundColor": YELLOW_BG,
+                          "textFormat": {"bold": True, "foregroundColor": BLACK, "fontSize": 10},
+                          "horizontalAlignment": "LEFT",
+                          "verticalAlignment": "MIDDLE",
+                      }},
+                      "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                  }
+              })
+
+          if tc_row_indices:
+              first_tc = tc_row_indices[0]
+              last_tc  = tc_row_indices[-1] + 1
+              for col in (1, 2, 3):  # Run, Type, Status
+                  fmt_requests.append({
+                      "repeatCell": {
+                          "range": cr(first_tc, col, last_tc, col + 1),
+                          "cell": {"userEnteredFormat": {
+                              "horizontalAlignment": "CENTER",
+                              "verticalAlignment": "MIDDLE",
+                          }},
+                          "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)",
+                      }
+                  })
+
+          sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": fmt_requests}).execute()
+          print("✅ Cell formatting applied.")
+
+          # ── STEP 2 — data validation (checkbox + dropdowns) ───────────────────
+          if tc_row_indices:
+              val_requests = [
+                  {"setDataValidation": {"range": cr(first_tc, 1, last_tc, 2), "rule": {
+                      "condition": {"type": "BOOLEAN"}, "showCustomUi": True, "strict": True}}},
+                  {"setDataValidation": {"range": cr(first_tc, 2, last_tc, 3), "rule": {
+                      "condition": {"type": "ONE_OF_LIST", "values": [
+                          {"userEnteredValue": "Existing"}, {"userEnteredValue": "New Feature"}]},
+                      "showCustomUi": True, "strict": True}}},
+                  {"setDataValidation": {"range": cr(first_tc, 3, last_tc, 4), "rule": {
+                      "condition": {"type": "ONE_OF_LIST", "values": [
+                          {"userEnteredValue": "Fail"}, {"userEnteredValue": "Pass"}]},
+                      "showCustomUi": True, "strict": True}}},
+              ]
+              sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": val_requests}).execute()
+              print("✅ Data validation applied.")
+
+          # ── STEP 3 — conditional formatting (chip colors) ─────────────────────
+          if tc_row_indices:
+              cond_requests = [
+                  {"addConditionalFormatRule": {"index": 0, "rule": {
+                      "ranges": [cr(first_tc, 2, last_tc, 3)],
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Existing"}]},
+                          "format": {"backgroundColor": GRAY_BG, "textFormat": {"bold": True, "foregroundColor": BLACK}},
+                      }}}},
+                  {"addConditionalFormatRule": {"index": 1, "rule": {
+                      "ranges": [cr(first_tc, 2, last_tc, 3)],
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "New Feature"}]},
+                          "format": {"backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957},
+                                     "textFormat": {"bold": True, "foregroundColor": BLACK}},
+                      }}}},
+                  {"addConditionalFormatRule": {"index": 2, "rule": {
+                      "ranges": [cr(first_tc, 3, last_tc, 4)],
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Fail"}]},
+                          "format": {"backgroundColor": RED_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
+                      }}}},
+                  {"addConditionalFormatRule": {"index": 3, "rule": {
+                      "ranges": [cr(first_tc, 3, last_tc, 4)],
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Pass"}]},
+                          "format": {"backgroundColor": GREEN_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
+                      }}}},
+              ]
+              sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": cond_requests}).execute()
+              print("✅ Conditional formatting applied.")
+
+          # ── STEP 4 — write data (after validation, so True renders checked) ───
+          sheets.values().update(
+              spreadsheetId=SPREADSHEET,
+              range=f"'{sheet_name}'!A1",
+              valueInputOption="RAW",
+              body={"values": all_rows},
+          ).execute()
+          print("✅ Data written.")
+
+          # ── STEP 5 — auto-resize A-E + freeze header row ──────────────────────
+          sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": [
+              {"autoResizeDimensions": {"dimensions": {
+                  "sheetId": new_sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 5}}},
+              {"updateSheetProperties": {
+                  "properties": {"sheetId": new_sheet_id, "gridProperties": {"frozenRowCount": 1}},
+                  "fields": "gridProperties.frozenRowCount"}},
+          ]}).execute()
+          print("✅ Auto-resize and freeze applied.")
+
+          print(f"\n🎉 Exported {total_failed} failed test case(s) to sheet '{sheet_name}'.")
+          PYEOF
+        env:
+          GSHEET_SERVICE_ACCOUNT: ${{ secrets.IOS_GSHEET_SERVICE_ACCOUNT }}
+          GSHEET_SPREADSHEET_ID: ${{ secrets.IOS_GSHEET_SPREADSHEET_ID }}
+          TEST_RUN_JSON: ${{ env.PATH_TEST_SUITE }}
+        shell: bash
+
+      # -------------------- ALLURE 3 HISTORY (trend persistence) --------------------
+      - name: Get Allure history
+        if: always()
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: ${{ secrets.WDIO_ANDROID_REPOS }}
+          token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+          ref: allure-history
+          path: report-history
+
+      - name: Restore Allure history file
+        if: always()
+        run: |
+          cp report-history/history.jsonl history.jsonl 2>/dev/null \
+            || echo "No previous history.jsonl (first run?) — starting fresh."
+        shell: bash
+
+      # -------------------- GENERATE ALLURE 3 REPORT --------------------
+      - name: Generate Allure 3 report
+        if: always()
+        run: |
+          npm install allure --no-save >/dev/null 2>&1 || true
+          cat > allurerc.mjs <<'JS'
+          import { defineConfig } from "allure";
+
+          const v = (k) => process.env[k] || "";
+
+          export default defineConfig({
+            name: "Record360 Android Instrumentation Tests",
+            output: "./allure-report",
+            historyPath: "./history.jsonl",
+            appendHistory: true,
+            historyLimit: 10,
+            variables: {
+              "Platform": "Android",
+              "SDK Version": v("SDK_VERSION"),
+              "Device Profile": v("DEVICE_PROFILE"),
+              "Device Arch": v("DEVICE_ARCH"),
+              "Device Target": v("DEVICE_TARGET"),
+            },
+            categories: {
+              rules: [
+                { name: "Product Bugs", matchers: { statuses: ["failed"] } },
+                { name: "Test Bugs",    matchers: { statuses: ["broken"] } },
+                { name: "Skipped",      matchers: { statuses: ["skipped"] } },
+              ],
+            },
+            plugins: {
+              awesome: {
+                options: {
+                  reportName: "Record360 Android Instrumentation Tests",
+                  singleFile: false,
+                  reportLanguage: "en",
+                },
+              },
+              dashboard: {
+                options: {
+                  reportName: "Record360 Android — Dashboard",
+                  reportLanguage: "en",
+                },
+              },
+            },
+          });
+          JS
+          allure --version 2>/dev/null || npx --yes allure --version || true
+          echo "Generating Allure 3 report from allure-results ..."
+          allure generate allure-results 2>/dev/null \
+            || npx --yes allure generate allure-results
+          echo "---- generated report tree ----"
+          find allure-report -maxdepth 2 -name index.html || true
+        shell: bash
+
+      - name: Save Allure history for next run
+        if: always()
+        run: |
+          mkdir -p allure-history-branch
+          cp history.jsonl allure-history-branch/history.jsonl 2>/dev/null \
+            || echo "No history.jsonl produced — skipping save."
+        shell: bash
+
+      - name: Push report history to branch
+        if: always()
+        continue-on-error: true
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+          external_repository: ${{ secrets.WDIO_ANDROID_REPOS }}
+          publish_branch: allure-history
+          publish_dir: allure-history-branch
+
+      # -------------------- ARTIFACTS --------------------
+      - name: Upload Allure HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report/
+          retention-days: 7
+
+      - name: Prepare deploy folder
+        if: always()
+        run: |
+          mkdir -p deploy
+          if [ -f allure-report/awesome/index.html ]; then
+            cp -r allure-report/awesome/. deploy/
+          elif [ -d allure-report ] && [ -n "$(ls -A allure-report 2>/dev/null)" ]; then
+            cp -r allure-report/. deploy/
+          else
+            echo "⚠️ No allure-report was generated — deploying a placeholder page instead."
+            echo "<html><body><h1>No Allure report was generated for this run.</h1></body></html>" > deploy/index.html
+          fi
+          if [ -d allure-report/dashboard ]; then
+            mkdir -p deploy/dashboard
+            cp -r allure-report/dashboard/. deploy/dashboard/
+          fi
+
+      - name: Create firebase config
+        if: always()
+        run: |
+          echo '{
+            "hosting": {
+              "public": "deploy",
+              "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+              "limit": 3
+            }
+          }' > firebase.json
+
+          echo '{
+            "projects": {
+              "default": "${{ env.ANDROID_FIREBASE_PROJECT_ID }}"
+            }
+          }' > .firebaserc
+
+      - name: Set up Firebase credentials
+        if: always()
+        run: echo '${{ secrets.ANDROID_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
+
+      - name: Deploy Allure Report to Firebase Hosting
+        if: always()
+        run: npx --yes firebase-tools@latest deploy --only hosting --project "$ANDROID_FIREBASE_PROJECT_ID"
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
+        shell: bash
+
+      # -------------------- NOTIFY GOOGLE CHAT --------------------
+      - name: Notify Google Chat
+        if: always()
+        run: |
+          # job.status here is `report`'s own status, not the test job's — a
+          # cancelled/failed `test` doesn't fail `report` (needs: [...] +
+          # if: always()), so real PASSED/FAILED signal comes from the
+          # SUITE_* counts set by the parse step above.
+          if [ -n "${SUITE_TOTAL:-}" ] && [ "${SUITE_TOTAL:-0}" != "0" ]; then
+            if [ "${SUITE_FAILED:-0}" = "0" ]; then
+              STATUS="PASSED"; STATUS_COLOR="#0F9D58"; STATUS_ICON="✅"
+            else
+              STATUS="FAILED"; STATUS_COLOR="#DB4437"; STATUS_ICON="❌"
+            fi
+          else
+            STATUS="CANCELLED"; STATUS_COLOR="#F4B400"; STATUS_ICON="⚠️"
+          fi
+
+          export STATUS STATUS_COLOR STATUS_ICON
+          export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
+          export REPORT_URL="https://${{ env.ANDROID_FIREBASE_PROJECT_ID }}.web.app"
+          export RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          export PASSED="${SUITE_PASSED:-0}"
+          export FAILED="${SUITE_FAILED:-0}"
+          export SKIPPED="${SUITE_SKIPPED:-0}"
+          export TOTAL="${SUITE_TOTAL:-0}"
+          export PASS_RATE="${SUITE_PASS_RATE:-0}"
+          export DURATION="${TEST_DURATION:-N/A}"
+          export DEVICE="${DEVICE}"
+          export BRANCH="${{ github.event.inputs.main-branch || 'master' }}"
+
+          python3 - <<'PYEOF'
+          import os
+          from string import Template
+
+          with open(".workflow-repo/.github/googleChat/android-report-card.json") as f:
+              tpl = Template(f.read())
+
+          keys = ["STATUS_ICON", "DATE_TIME", "REPORT_URL", "RUN_URL", "PASSED", "PASS_RATE",
+                  "FAILED", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH", "STATUS_COLOR", "STATUS"]
+          payload = tpl.safe_substitute({k: os.environ.get(k, "") for k in keys})
+
+          with open("payload.json", "w") as f:
+              f.write(payload)
+          PYEOF
+
+          curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d @payload.json
+        shell: bash
+
+      - name: Upload merged results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Instrumentation Test Result
+          path: |
+            allure-results/
+            tests.json
+          retention-days: 7
+          if-no-files-found: warn
