@@ -22,10 +22,10 @@
                       }
                     },
                     {
-                      "text": "▶️ OPEN GITHUB ACTION",
+                      "text": "📊 VIEW TEST RESULTS",
                       "onClick": {
                         "openLink": {
-                          "url": "${RUN_URL}"
+                          "url": "${GSHEET_URL}"
                         }
                       }
                     }

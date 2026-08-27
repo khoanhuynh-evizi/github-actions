@@ -649,6 +649,12 @@ jobs:
           new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
           print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
 
+          # Surface the new tab's gid so the Notify step can deep-link
+          # straight to it — a bare spreadsheet URL opens whatever sheet was
+          # last active for the doc, not necessarily this newly created one.
+          with open(os.environ["GITHUB_ENV"], "a") as gh:
+              gh.write(f"GSHEET_NEW_SHEET_ID={new_sheet_id}\n")
+
           def cr(r1, c1, r2, c2):
               return {"sheetId": new_sheet_id,
                       "startRowIndex": r1, "endRowIndex": r2,
@@ -969,7 +975,14 @@ jobs:
           export STATUS STATUS_COLOR STATUS_ICON
           export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
           export REPORT_URL="https://${{ env.IOS_FIREBASE_PROJECT_ID }}.web.app"
-          export RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # Deep-link to the sheet tab this run actually created (if any) —
+          # a bare spreadsheet URL opens whatever sheet was last active for
+          # the doc, not necessarily this run's tab.
+          if [ -n "${GSHEET_NEW_SHEET_ID:-}" ]; then
+            export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.IOS_GSHEET_SPREADSHEET_ID }}/edit#gid=${GSHEET_NEW_SHEET_ID}"
+          else
+            export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.IOS_GSHEET_SPREADSHEET_ID }}/edit"
+          fi
           export PASSED="${SUITE_PASSED:-0}"
           export FAILED="${SUITE_FAILED:-0}"
           export SKIPPED="${SUITE_SKIPPED:-0}"
@@ -987,7 +1000,7 @@ jobs:
           with open(".workflow-repo/.github/googleChat/ios-report-card.json") as f:
               tpl = Template(f.read())
 
-          keys = ["STATUS_ICON", "DATE_TIME", "REPORT_URL", "RUN_URL", "PASSED", "PASS_RATE",
+          keys = ["STATUS_ICON", "DATE_TIME", "REPORT_URL", "GSHEET_URL", "PASSED", "PASS_RATE",
                   "FAILED", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH", "STATUS_COLOR", "STATUS"]
           payload = tpl.safe_substitute({k: os.environ.get(k, "") for k in keys})
 
