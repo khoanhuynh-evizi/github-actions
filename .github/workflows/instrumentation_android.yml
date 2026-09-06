@@ -75,6 +75,17 @@ jobs:
             target: ${{ inputs.device-target || 'google_apis' }}
             profile: ${{ inputs.device-profile || 'pixel_7' }}
     steps:
+      - name: Clean up workspace
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -102,14 +113,19 @@ jobs:
           DATA: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: echo $DATA | base64 --decode > app/google-services.json
 
+      
+      - name: Checkout GraphQL Schema File
+        uses: actions/checkout@v4
+        with:
+          path: .workflow-repo
+          sparse-checkout: |
+            .github/schemas/record360-schema.json
+          sparse-checkout-cone-mode: false
+
       - name: Load GraphQL Schema File
-        env:
-          DATA1: ${{ secrets.GRAPHQL_SCHEMA_JSON_1 }}
-          DATA2: ${{ secrets.GRAPHQL_SCHEMA_JSON_2 }}
         run: |
           mkdir -p Submodule/sdk/src/main/assets/graphql/record360
-          echo "${DATA1}${DATA2}" | base64 --decode | gunzip > Submodule/sdk/src/main/assets/graphql/record360/schema.json
-
+          cp .workflow-repo/.github/schemas/record360-schema.json Submodule/sdk/src/main/assets/graphql/record360/schema.json
 
       - name: Load Gradle Properties File
         env:
