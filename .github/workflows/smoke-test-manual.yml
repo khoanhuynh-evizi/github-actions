@@ -21,6 +21,10 @@ on:
         description: 'Branch WDIO'
         required: false
         default: ''
+      testConfigJSON:
+        description: 'Config JSON'
+        required: true
+        default: 'smoke'
       branchDashboard:
         description: 'Branch dashboard'
         required: false
@@ -32,7 +36,7 @@ on:
       forceRun:
         description: 'Force run (skip commit check)'
         required: false
-        default: 'false'
+        default: false
         type: boolean
 
 concurrency:
@@ -164,11 +168,7 @@ jobs:
       id: wdio
       run: |
         cd wdio
-        yarn test:local \
-            --suite="${{ github.event.inputs.suite || 'Smoke Test'}}" \
-            --features="${{ github.event.inputs.features }}" \
-            --featureTestCases="${{ github.event.inputs.featureTestCases }}" \
-          2>&1 | tee ../specs-reporter.log
+        yarn test:run-config --config ./run-configs/${{ github.event.inputs.testConfigJSON }}.json 2>&1 | tee ../specs-reporter.log
       env:
         CAPABILITIES: chrome
         MAX_INSTANCES: 2
