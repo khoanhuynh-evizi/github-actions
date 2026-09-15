@@ -5,18 +5,6 @@ on:
     - cron: '0 20 * * 0-4' # 03:00h every night UTC+7
   workflow_dispatch:
     inputs:
-      suite:
-        description: 'Suite name'
-        required: true
-        default: 'Smoke Test'
-      features:
-        description: 'Feature (Optional)'
-        required: false
-        default: ''
-      featureTestCases:
-        description: 'Specific testcase (Optional)'
-        required: false
-        default: ''
       branchWdio:
         description: 'Branch WDIO'
         required: false
@@ -33,6 +21,14 @@ on:
         description: 'Dashboard URL (Optional)'
         required: false
         default: ''
+      googleChatNoti:
+        description: 'Google Chat Channel'
+        required: true
+        type: choice
+        options:
+          - private
+          - record360
+        default: private
       forceRun:
         description: 'Force run (skip commit check)'
         required: false
@@ -802,6 +798,13 @@ jobs:
 
         envsubst < .github/googleChat/dashboard-card.json > payload.json
 
-        curl -X POST "${{ secrets.GCHAT_WEBHOOK }}" \
-          -H "Content-Type: application/json" \
-          -d @payload.json
+        if [ "${{ inputs.googleChatNoti }}" = "private" ]; then
+          curl -X POST "${{ secrets.GCHAT_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d @payload.json
+
+        elif [ "${{ inputs.googleChatNoti }}" = "record360" ]; then
+          curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d @payload.json
+        fi
