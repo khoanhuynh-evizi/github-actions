@@ -763,8 +763,12 @@ jobs:
         shell: bash
 
       # -------------------- ALLURE 3 HISTORY (trend persistence) --------------------
+      # Skipped when the run was cancelled (e.g. someone manually stops it
+      # mid-test) — `cancelled()` is a GitHub Actions status-check function
+      # distinct from a job's own success/failure, so `!cancelled()` still
+      # runs this on both pass and fail, just not on a manual cancel.
       - name: Get Allure history
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/checkout@v4
         continue-on-error: true
         with:
@@ -774,7 +778,7 @@ jobs:
           path: report-history
 
       - name: Restore Allure history file
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           cp report-history/history.jsonl history.jsonl 2>/dev/null \
             || echo "No previous history.jsonl (first run?) — starting fresh."
@@ -782,7 +786,7 @@ jobs:
 
       # -------------------- GENERATE ALLURE 3 REPORT --------------------
       - name: Generate Allure 3 report
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           npm install allure --no-save >/dev/null 2>&1 || true
           cat > allurerc.mjs <<'JS'
@@ -836,7 +840,7 @@ jobs:
         shell: bash
 
       - name: Save Allure history for next run
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p allure-history-branch
           cp history.jsonl allure-history-branch/history.jsonl 2>/dev/null \
@@ -844,7 +848,7 @@ jobs:
         shell: bash
 
       - name: Push report history to branch
-        if: always()
+        if: ${{ !cancelled() }}
         continue-on-error: true
         uses: peaceiris/actions-gh-pages@v4
         with:
@@ -855,7 +859,7 @@ jobs:
 
       # -------------------- ARTIFACTS --------------------
       - name: Upload Allure HTML report
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: allure-report
@@ -863,7 +867,7 @@ jobs:
           retention-days: 7
 
       - name: Prepare deploy folder
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p deploy
           if [ -f allure-report/awesome/index.html ]; then
@@ -880,7 +884,7 @@ jobs:
           fi
 
       - name: Create firebase config
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           echo '{
             "hosting": {
@@ -897,19 +901,21 @@ jobs:
           }' > .firebaserc
 
       - name: Set up Firebase credentials
-        if: always()
+        if: ${{ !cancelled() }}
         run: echo '${{ secrets.ANDROID_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
 
       - name: Deploy Allure Report to Firebase Hosting
-        if: always()
+        if: ${{ !cancelled() }}
         run: npx --yes firebase-tools@latest deploy --only hosting --project "$ANDROID_FIREBASE_PROJECT_ID"
         env:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
         shell: bash
 
       # -------------------- NOTIFY GOOGLE CHAT --------------------
+      # Skipped on a manual cancel — see the Allure history step above for
+      # why `!cancelled()` is used instead of `always()` here.
       - name: Notify Google Chat
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           # job.status here is `report`'s own status, not the test job's — a
           # cancelled/failed `test` doesn't fail `report` (needs: [...] +
