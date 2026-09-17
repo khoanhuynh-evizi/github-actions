@@ -96,8 +96,15 @@ jobs:
 
       - name: Checkout submodules at master branch
         if: ${{ github.event.inputs.submodule-branch != '' }}
+        env:
+          SUBMODULE_BRANCH: ${{ github.event.inputs.submodule-branch }}
         run: |
-          git submodule foreach git checkout ${{ github.event.inputs.submodule-branch }}
+          # actions/checkout with submodules: true only fetches the commit
+          # pinned by the superproject, not other branches — a plain
+          # `git checkout <branch>` inside the submodule has no local ref to
+          # resolve, hence "pathspec did not match any file(s)". Fetch the
+          # branch's tip first and check it out from FETCH_HEAD directly.
+          git submodule foreach "git fetch --depth 1 origin $SUBMODULE_BRANCH && git checkout -B $SUBMODULE_BRANCH FETCH_HEAD"
 
       - name: Download Test data from firebase
         if: "${{ inputs.useUrlTestData == true }}"
