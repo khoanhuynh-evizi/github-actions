@@ -895,14 +895,21 @@ jobs:
           path: deploy/
           retention-days: 1
 
+      # TEMPORARY (testing only): points at release-features-test.yml on the
+      # test-allure-report branch, whose test-cross-repo-deploy job runs the
+      # same download-artifact + S3 sync steps deploy-allure-to-s3.yml will.
+      # deploy-allure-to-s3.yml isn't on dashboard's master yet, so it can't
+      # be dispatched at all — switch this back to
+      # ".../workflows/deploy-allure-to-s3.yml/dispatches" with "ref":"master"
+      # once that file is merged there.
       - name: Trigger Allure S3 deploy in dashboard repo
         if: ${{ !cancelled() }}
         run: |
           curl -f -X POST \
             -H "Authorization: token ${{ secrets.WDIO_ACCESS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/Record360/dashboard/actions/workflows/deploy-allure-to-s3.yml/dispatches \
-            -d '{"ref":"master","inputs":{"source_repo":"${{ github.repository }}","run_id":"${{ github.run_id }}","artifact_name":"allure-deploy-android","prefix":"android"}}'
+            https://api.github.com/repos/Record360/dashboard/actions/workflows/release-features-test.yml/dispatches \
+            -d '{"ref":"test-allure-report","inputs":{"source_repo":"${{ github.repository }}","run_id":"${{ github.run_id }}","artifact_name":"allure-deploy-android","prefix":"android"}}'
         shell: bash
 
       # -------------------- NOTIFY GOOGLE CHAT --------------------
