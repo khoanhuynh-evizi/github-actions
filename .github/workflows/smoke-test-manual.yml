@@ -106,12 +106,15 @@ jobs:
       matrix:
         include:
           - suite: smoke
+            suiteType: 'Smoke'
             suiteLabel: 'Smoke Test'
             runCommand: 'yarn test:local --suite="Smoke Test"'
           - suite: regression
+            suiteType: 'Regression'
             suiteLabel: 'Regression Test'
             runCommand: 'yarn test:run-config --config ./run-configs/regression.json'
           - suite: sanity
+            suiteType: 'Sanity'
             suiteLabel: 'Sanity Test'
             runCommand: 'yarn test:run-config --config ./run-configs/sanity.json'
 
@@ -810,6 +813,7 @@ jobs:
 
         export STATUS STATUS_COLOR STATUS_ICON
         export SUITE_LABEL="${{ matrix.suiteLabel }}"
+        export SUITE_TYPE="${{ matrix.suiteType }}"
         export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
         export REPORT_URL="https://360-staging-allure-report.s3.amazonaws.com/${{ matrix.suite }}/index.html"
         # Deep-link to the sheet tab this run actually created (if any) —
@@ -825,8 +829,6 @@ jobs:
 
         envsubst < .github/googleChat/dashboard-card.json > payload.json
 
-        # TEMPORARY (testing only): hardcoded Google Chat webhook, switch back
-        # to "${{ secrets.TEST_WEBHOOK }}" once testing is done.
-        curl -X POST "https://chat.googleapis.com/v1/spaces/AAQAPbfi-Sc/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=zRIJGPTVnC1PSJeEWhgW4SM6-r94Sl7q94_zLVqw-bg" \
+        curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
           -H "Content-Type: application/json" \
           -d @payload.json
