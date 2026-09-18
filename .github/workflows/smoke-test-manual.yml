@@ -256,34 +256,34 @@ jobs:
         path: wdio/reports/
         retention-days: 7
 
-    - name: Create firebase config
+    # AWS credentials for the shared S3 report bucket only exist as secrets
+    # in Record360/dashboard, not in this repo. Rather than duplicating
+    # them here, upload the rendered report as an artifact and ask
+    # dashboard's own workflow (which already has those secrets) to fetch
+    # it and do the actual S3 sync.
+    - name: Upload deploy folder for cross-repo S3 deploy
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: allure-deploy-dashboard
+        path: deploy/
+        retention-days: 1
+
+    # TEMPORARY (testing only): points at release-features-test.yml on the
+    # test-allure-report branch, whose test-cross-repo-deploy job runs the
+    # same download-artifact + S3 sync steps deploy-allure-to-s3.yml will.
+    # deploy-allure-to-s3.yml isn't on dashboard's master yet, so it can't
+    # be dispatched at all — switch this back to
+    # ".../workflows/deploy-allure-to-s3.yml/dispatches" with "ref":"master"
+    # once that file is merged there.
+    - name: Trigger Allure S3 deploy in dashboard repo
       if: ${{ !cancelled() }}
       run: |
-        echo '{
-          "hosting": {
-            "public": "deploy",
-            "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
-            "limit": 3
-          }
-        }' > firebase.json
-
-        echo '{
-          "projects": {
-            "default": "record360-report"
-          }
-        }' > .firebaserc
-
-    - name: Set up Firebase credentials
-      if: ${{ !cancelled() }}
-      run: echo '${{ secrets.CHINH_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
-
-    - name: Deploy Allure Report to Firebase Hosting
-      if: ${{ !cancelled() }}
-      uses: w9jds/firebase-action@v13.27.0
-      with:
-        args: deploy --only hosting --project record360-report
-      env:
-        GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
+        curl -f -X POST \
+          -H "Authorization: token ${{ secrets.WDIO_ACCESS_TOKEN }}" \
+          -H "Accept: application/vnd.github+json" \
+          https://api.github.com/repos/Record360/dashboard/actions/workflows/release-features-test.yml/dispatches \
+          -d '{"ref":"test-allure-report","inputs":{"source_repo":"${{ github.repository }}","run_id":"${{ github.run_id }}","artifact_name":"allure-deploy-dashboard","prefix":"dashboard"}}'
 
     - name: Parse Spec Reporter Result
       if: ${{ !cancelled() }}
@@ -819,7 +819,7 @@ jobs:
 
         export STATUS STATUS_COLOR STATUS_ICON
         export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
-        export REPORT_URL="https://record360-report.web.app"
+        export REPORT_URL="https://360-staging-allure-report.s3.amazonaws.com/dashboard/index.html"
         # Deep-link to the sheet tab this run actually created (if any) —
         # a bare spreadsheet URL opens whatever sheet was last active for
         # the doc, not necessarily this run's tab.
