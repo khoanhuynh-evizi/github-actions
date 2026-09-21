@@ -4,7 +4,7 @@
       "cardId": "wdio-report",
       "card": {
         "header": {
-          "title": "${STATUS_ICON} Release - ${SUITE_TYPE} Test Report",
+          "title": "${STATUS_ICON} [Dashboard] Release - ${SUITE_TYPE} Test Report",
           "subtitle": "${SUITE_LABEL} · ${DATE_TIME}"
         },
         "sections": [
