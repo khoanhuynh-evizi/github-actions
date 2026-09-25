@@ -17,6 +17,17 @@ on:
         description: 'Dashboard URL (Optional)'
         required: false
         default: ''
+      runMode:
+        description: 'Run mode'
+        required: true
+        type: choice
+        default: 'Run All Parallel'
+        options:
+          - 'Run Smoke - Regression - Sanity in queue'
+          - 'Run All Parallel'
+          - 'Run Only Smoke'
+          - 'Run Only Regression'
+          - 'Run Only Sanity'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -95,28 +106,62 @@ jobs:
 
           echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
 
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+      max_parallel: ${{ steps.set.outputs.max_parallel }}
+    steps:
+      - name: Resolve suites & parallelism from run mode
+        id: set
+        run: |
+          RUN_MODE="${{ github.event.inputs.runMode }}"
+
+          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\""}'
+          REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json"}'
+          SANITY='{"suite":"sanity","suiteType":"Sanity","suiteLabel":"Sanity Test","runCommand":"yarn test:run-config --config ./run-configs/sanity.json"}'
+
+          case "$RUN_MODE" in
+            "Run Only Smoke")
+              MATRIX="[$SMOKE]"
+              MAX_PARALLEL=1
+              ;;
+            "Run Only Regression")
+              MATRIX="[$REGRESSION]"
+              MAX_PARALLEL=1
+              ;;
+            "Run Only Sanity")
+              MATRIX="[$SANITY]"
+              MAX_PARALLEL=1
+              ;;
+            "Run Smoke - Regression - Sanity in queue")
+              MATRIX="[$SMOKE,$REGRESSION,$SANITY]"
+              MAX_PARALLEL=1
+              ;;
+            *)
+              MATRIX="[$SMOKE,$REGRESSION,$SANITY]"
+              MAX_PARALLEL=3
+              ;;
+          esac
+
+          echo "Run mode: $RUN_MODE"
+          echo "Matrix: $MATRIX"
+          echo "Max parallel: $MAX_PARALLEL"
+
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "max_parallel=$MAX_PARALLEL" >> $GITHUB_OUTPUT
+
   chrome-ubuntu:
-    needs: check-repos-commit
+    needs: [check-repos-commit, prepare-matrix]
     if: needs.check-repos-commit.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Ho_Chi_Minh
     strategy:
       fail-fast: false
+      max-parallel: ${{ fromJson(needs.prepare-matrix.outputs.max_parallel) }}
       matrix:
-        include:
-          - suite: smoke
-            suiteType: 'Smoke'
-            suiteLabel: 'Smoke Test'
-            runCommand: 'yarn test:local --suite="Smoke Test"'
-          - suite: regression
-            suiteType: 'Regression'
-            suiteLabel: 'Regression Test'
-            runCommand: 'yarn test:run-config --config ./run-configs/regression.json'
-          - suite: sanity
-            suiteType: 'Sanity'
-            suiteLabel: 'Sanity Test'
-            runCommand: 'yarn test:run-config --config ./run-configs/sanity.json'
+        include: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
     - name: Checkout workflow repo
