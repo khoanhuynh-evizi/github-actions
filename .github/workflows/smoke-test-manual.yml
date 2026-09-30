@@ -206,7 +206,7 @@ jobs:
         ${{ matrix.runCommand }} 2>&1 | tee ../specs-reporter.log
       env:
         CAPABILITIES: chrome
-        MAX_INSTANCES: 2
+        MAX_INSTANCES: 3
         R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
 
     - name: WDIO Test Checker
