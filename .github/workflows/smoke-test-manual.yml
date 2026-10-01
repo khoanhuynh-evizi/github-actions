@@ -325,6 +325,26 @@ jobs:
     - name: Parse Spec Reporter Result
       if: ${{ !cancelled() }}
       run: |
+        # ── Test case counts from Allure (one per it() result, per role) ────
+        SUMMARY=wdio/allure-report/widgets/summary.json
+        if [ -f "$SUMMARY" ]; then
+          TC_TOTAL=$(jq '.statistic.total' "$SUMMARY")
+          TC_PASSED=$(jq '.statistic.passed' "$SUMMARY")
+          TC_FAILED=$(jq '.statistic.failed + .statistic.broken' "$SUMMARY")
+          TC_SKIPPED=$(jq '.statistic.skipped' "$SUMMARY")
+        else
+          TC_TOTAL=0; TC_PASSED=0; TC_FAILED=0; TC_SKIPPED=0
+        fi
+        TC_DENOM=$(( TC_TOTAL - TC_SKIPPED ))
+        TC_PASS_RATE=$(( TC_DENOM > 0 ? TC_PASSED * 100 / TC_DENOM : 0 ))
+
+        echo "TC_TOTAL=$TC_TOTAL" >> $GITHUB_ENV
+        echo "TC_PASSED=$TC_PASSED" >> $GITHUB_ENV
+        echo "TC_FAILED=$TC_FAILED" >> $GITHUB_ENV
+        echo "TC_SKIPPED=$TC_SKIPPED" >> $GITHUB_ENV
+        echo "TC_PASS_RATE=$TC_PASS_RATE" >> $GITHUB_ENV
+
+        # ── Spec file counts from WDIO spec reporter ────────────────────────
         LOG=specs-reporter.log
         if ! grep -q "Spec Files:" "$LOG"; then
           echo "TOTAL=0" >> $GITHUB_ENV
@@ -332,6 +352,7 @@ jobs:
           echo "FAILED=0" >> $GITHUB_ENV
           echo "SKIPPED=0" >> $GITHUB_ENV
           echo "RETRIES=0" >> $GITHUB_ENV
+          echo "PASS_RATE=0" >> $GITHUB_ENV
           echo "DURATION=00:00:00" >> $GITHUB_ENV
           exit 0
         fi
@@ -345,7 +366,8 @@ jobs:
         TOTAL=$(echo "$LINE" | grep -oP '\d+(?=\s+total)' || echo 0)
         DURATION=$(echo "$LINE" | grep -oP '\d{2}:\d{2}:\d{2}' || echo "00:00:00")
 
-        PASS_RATE=$(( PASSED * 100 / (TOTAL - SKIPPED)))
+        DENOM=$(( TOTAL - SKIPPED ))
+        PASS_RATE=$(( DENOM > 0 ? PASSED * 100 / DENOM : 0 ))
 
         echo "TOTAL=$TOTAL" >> $GITHUB_ENV
         echo "PASSED=$PASSED" >> $GITHUB_ENV
