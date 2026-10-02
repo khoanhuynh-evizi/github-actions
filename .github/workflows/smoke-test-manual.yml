@@ -447,6 +447,9 @@ jobs:
         prefix_re   = re.compile(r'^\[.*?\]\s*')
         spec_re     = re.compile(r'^»\s+\S+\.spec\.ts')
         cross_re    = re.compile(r'[✖✗×]\s+([\w]+-\d+[^@\n]*)')
+        # Fallback for test IDs without a hyphen, e.g. "I914: Some title"
+        # (seen in the regression suite) instead of ticket-style "ABC-123".
+        cross_re_alt = re.compile(r'[✖✗×]\s+([A-Za-z]+\d+:[^@\n]*)')
         numbered_re = re.compile(r'^\s*\d+\)\s+.*?([\w]+-\d+[^@\[\n]*)')
 
         def clean_label(raw):
@@ -510,7 +513,7 @@ jobs:
                     continue
                 if stripped.startswith(('[', '✖', '✗', '×', '-', '.')):
                     continue
-                if re.match(r'^[\w]+-\d+', stripped) or re.match(r'^\d+\)', stripped):
+                if re.match(r'^[\w]+-\d+', stripped) or re.match(r'^\d+\)', stripped) or re.match(r'^[A-Za-z]+\d+:', stripped):
                     continue
                 feature_name = stripped
                 break
@@ -520,7 +523,7 @@ jobs:
                 feature_name = m.group(1).replace('-', ' ').replace('_', ' ').title() if m else "Unknown"
 
             for line in lines:
-                m = cross_re.search(line)
+                m = cross_re.search(line) or cross_re_alt.search(line)
                 if m:
                     label = clean_label(m.group(1))
                     if label and label not in seen_tc:
