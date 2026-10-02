@@ -51,6 +51,11 @@
                 "textParagraph": {
                   "text": "⏱️ <b>Duration:</b> ${DURATION}<br>🌿 <b>Branch auto:</b> <code>${BRANCH_WDIO}</code><br>🌿 <b>Branch code:</b> <code>${BRANCH_DASHBOARD}</code><br><b>Status:</b> <font color=\"${STATUS_COLOR}\"><b>${STATUS}</b></font>"
                 }
+              },
+              {
+                "textParagraph": {
+                  "text": "🌐 <b>Env:</b> ${ENV_URL}<br>🎫 <b>Tickets:</b> ${TICKETS}"
+                }
               }
             ]
           }

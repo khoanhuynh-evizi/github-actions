@@ -17,6 +17,10 @@ on:
         description: 'Dashboard URL (Optional)'
         required: false
         default: ''
+      tickets:
+        description: 'Tickets (Optional)'
+        required: false
+        default: ''
       runMode:
         description: 'Run mode'
         required: true
@@ -265,6 +269,8 @@ jobs:
         branch_auto=${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}
         branch_code=${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}
         suite=${{ matrix.suite }}
+        env=${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
+        tickets=${{ github.event.inputs.tickets || 'N/A' }}
         ENVEOF
 
     - name: Generate Allure Report
@@ -910,6 +916,10 @@ jobs:
         fi
         export BRANCH_WDIO="${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}"
         export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}"
+        export ENV_URL="${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}"
+
+        TICKETS="${{ github.event.inputs.tickets }}"
+        export TICKETS="${TICKETS:-—}"
 
         envsubst < .github/googleChat/dashboard-card.json > payload.json
 
