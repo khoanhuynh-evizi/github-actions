@@ -29,6 +29,16 @@ on:
           - 'Only Smoke Lite'
           - 'Only Regression'
           - 'Only Sanity'
+      reportType:
+        description: 'Report type'
+        required: true
+        type: choice
+        default: 'Release'
+        options:
+          - 'Daily'
+          - 'Feature'
+          - 'Staging'
+          - 'Release'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -259,7 +269,7 @@ jobs:
 
     - name: Generate Allure Report
       if: ${{ !cancelled() }}
-      run: npx --yes allure-commandline@2.37.0 generate wdio/reports --clean -o wdio/allure-report --name "[Dashboard] Release - ${{ matrix.suiteLabel }} Report"
+      run: npx --yes allure-commandline@2.37.0 generate wdio/reports --clean -o wdio/allure-report --name "[Dashboard] ${{ github.event.inputs.reportType }} - ${{ matrix.suiteLabel }} Report"
 
     - name: Save history for next run
       if: ${{ !cancelled() }}
@@ -887,6 +897,7 @@ jobs:
         export STATUS STATUS_COLOR STATUS_ICON
         export SUITE_LABEL="${{ matrix.suiteLabel }}"
         export SUITE_TYPE="${{ matrix.suiteType }}"
+        export REPORT_TYPE="${{ github.event.inputs.reportType }}"
         export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
         export REPORT_URL="https://360-staging-allure-report.s3.amazonaws.com/${{ matrix.suite }}/index.html"
         # Deep-link to the sheet tab this run actually created (if any) —
