@@ -78,15 +78,23 @@ jobs:
             echo "Checking repo: $REPO"
             echo "Branch: $BRANCH"
 
-            COMMIT_JSON=$(curl -s \
+            HTTP_CODE=$(curl -s -o commit_response.json -w "%{http_code}" \
               -H "Authorization: token $TOKEN" \
               https://api.github.com/repos/$REPO/commits/$BRANCH)
 
-            COMMIT_DATE=$(echo "$COMMIT_JSON" | jq -r '.commit.committer.date')
-            COMMIT_SHA=$(echo "$COMMIT_JSON" | jq -r '.sha')
+            COMMIT_DATE=$(jq -r '.commit.committer.date' commit_response.json)
+            COMMIT_SHA=$(jq -r '.sha' commit_response.json)
 
-            if [ "$COMMIT_DATE" = "null" ] || [ -z "$COMMIT_DATE" ]; then
-              echo "❌ Failed to fetch commit from $REPO/$BRANCH — check token & repo name"
+            if [ "$HTTP_CODE" != "200" ] || [ "$COMMIT_DATE" = "null" ] || [ -z "$COMMIT_DATE" ]; then
+              API_MSG=$(jq -r '.message // empty' commit_response.json)
+              echo "❌ Failed to fetch commit from $REPO/$BRANCH (HTTP $HTTP_CODE)"
+              [ -n "$API_MSG" ] && echo "   GitHub API says: $API_MSG"
+              case "$HTTP_CODE" in
+                401) echo "   → Token is invalid or expired — check the access token secret" ;;
+                403) echo "   → Token lacks permission, or API rate limit hit" ;;
+                404) echo "   → Repo not found OR branch '$BRANCH' does not exist — check repo secret, token's repo access & branch name" ;;
+                000) echo "   → Network error (curl could not connect)" ;;
+              esac
               exit 1
             fi
 
