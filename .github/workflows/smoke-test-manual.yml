@@ -853,6 +853,6 @@ jobs:
 
         envsubst < .github/googleChat/dashboard-card.json > payload.json
 
-        curl -X POST "https://chat.googleapis.com/v1/spaces/AAQAxcsMc74/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=jLqxbYzy2DEH59cMJ7augnU2hj2SEis3hsSjAUY7xIY" \
+        curl -X POST "https://chat.googleapis.com/v1/spaces/AAQA5ajDrT8/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=ue7tqdm5M66dbdcwfG-ZcMjGPgyAUxi2W3CwCxUc0nU" \
           -H "Content-Type: application/json" \
           -d @payload.json
