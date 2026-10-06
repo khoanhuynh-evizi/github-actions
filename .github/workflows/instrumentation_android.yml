@@ -195,6 +195,19 @@ jobs:
           disable-animations: true
           script: echo "Generated AVD snapshot for caching."
 
+      # Logs host RAM/swap/disk every 2 minutes during the test run, to
+      # diagnose the runner dying ~2h in with no error in the test output.
+      - name: Create resource monitor script
+        run: |
+          cat > "$RUNNER_TEMP/monitor.sh" <<'EOF'
+          #!/usr/bin/env bash
+          while true; do
+            echo "[monitor] $(date +%T) $(free -m | awk '/Mem/{print "mem_used="$3"MB avail="$7"MB"}') $(free -m | awk '/Swap/{print "swap_used="$3"MB"}') $(df -h / | awk 'NR==2{print "disk_used="$5" free="$4}')"
+            sleep 120
+          done
+          EOF
+          chmod +x "$RUNNER_TEMP/monitor.sh"
+
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
         uses: reactivecircus/android-emulator-runner@v2
@@ -216,7 +229,7 @@ jobs:
             adb shell wm size
             adb shell wm density
             chmod +x ./scripts/run-testsuite.sh
-            ./scripts/run-testsuite.sh --package=com.record360.app.test.tests --path="$PATH_TEST_SUITE"
+            "$RUNNER_TEMP/monitor.sh" & MON_PID=$!; ./scripts/run-testsuite.sh --package=com.record360.app.test.tests --path="$PATH_TEST_SUITE"; RC=$?; kill $MON_PID; exit $RC
 
       - name: Execute custom instrument test ${{ inputs.instrument_options }} on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options != '' }}"
@@ -240,6 +253,13 @@ jobs:
             adb shell wm density
             chmod +x ./scripts/run-tests.sh
             ./scripts/run-tests.sh --instrument-options=${{ inputs.instrument_options }}
+
+      - name: Diagnose runner resources
+        if: failure()
+        run: |
+          free -m
+          df -h /
+          sudo dmesg -T | grep -i -E "out of memory|killed process|oom" || echo "No OOM kills found in dmesg"
 
       - name: Upload reports on API ${{ matrix.version }}
         if: success() || failure()
@@ -967,7 +987,7 @@ jobs:
               f.write(payload)
           PYEOF
 
-          curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
+          curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
             -H "Content-Type: application/json" \
             -d @payload.json
         shell: bash
