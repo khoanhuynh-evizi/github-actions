@@ -174,7 +174,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-${{ matrix.version }}-${{ matrix.os }}-${{ matrix.target }}
+          key: avd-${{ matrix.version }}-${{ matrix.os }}-${{ matrix.target }}-4c-4g
 
       - name: Create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
@@ -185,9 +185,9 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
-          cores: 2
+          cores: 4
           sdcard-path-or-size: 1024M
-          ram-size: 2048M
+          ram-size: 4096M
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
@@ -204,9 +204,9 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
-          cores: 2
+          cores: 4
           sdcard-path-or-size: 1024MB
-          ram-size: 2048M
+          ram-size: 4096M
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
@@ -227,9 +227,9 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
-          cores: 2
+          cores: 4
           sdcard-path-or-size: 2000M
-          ram-size: 2048M
+          ram-size: 4096M
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
