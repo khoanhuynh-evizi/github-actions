@@ -66,7 +66,13 @@ jobs:
   test:
     runs-on: ${{ inputs.os-version || 'ubuntu-latest' }}
     strategy:
+      # One shard failing must not cancel the others still running.
+      fail-fast: false
       matrix:
+        # The full suite takes ~4h on one emulator, long enough for the runner
+        # to die mid-run — split it into shards that each run on their own
+        # runner. A custom instrument_options subset runs unsharded.
+        shard: ${{ fromJSON(inputs.instrument_options == '' && '[0, 1, 2, 3]' || '[0]') }}
         include:
           - os: ${{ inputs.os-version || 'ubuntu-latest' }}
             version: ${{ inputs.sdk-version || '35' }}
@@ -208,6 +214,35 @@ jobs:
           EOF
           chmod +x "$RUNNER_TEMP/monitor.sh"
 
+      # Same test selection as scripts/run-testsuite.sh in the app repo
+      # (enabled test cases from testRun.json, split on commas/spaces), but
+      # round-robins them across shards so each shard gets an even slice.
+      # Lives here so sharding needs no change to the app repo's script.
+      - name: Create shard test script
+        if: "${{ inputs.instrument_options == '' }}"
+        run: |
+          cat > "$RUNNER_TEMP/run-shard.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -eo pipefail
+          package="$1"; suite="$2"; num_shards="$3"; shard_index="$4"
+
+          tests=$(jq -r '.testsuite[] | select(.enabled == true) | .testCases[] | select(.enabled == true) | .name' "$suite" \
+            | tr ', ' '\n\n' | grep -v '^$' \
+            | awk -v n="$num_shards" -v i="$shard_index" -v p="$package" \
+                '(NR - 1) % n == i { printf "%s%s.%s", (c++ ? "," : ""), p, $0 }')
+
+          if [[ -z "$tests" ]]; then
+            echo "No enabled tests assigned to shard $shard_index of $num_shards — nothing to run."
+            exit 0
+          fi
+
+          echo "Shard $shard_index of $num_shards runs $(tr ',' '\n' <<< "$tests" | wc -l) test(s):"
+          tr ',' '\n' <<< "$tests"
+
+          ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$tests" --continue --stacktrace
+          EOF
+          chmod +x "$RUNNER_TEMP/run-shard.sh"
+
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
         uses: reactivecircus/android-emulator-runner@v2
@@ -228,8 +263,7 @@ jobs:
           script: |
             adb shell wm size
             adb shell wm density
-            chmod +x ./scripts/run-testsuite.sh
-            "$RUNNER_TEMP/monitor.sh" & MON_PID=$!; ./scripts/run-testsuite.sh --package=com.record360.app.test.tests --path="$PATH_TEST_SUITE"; RC=$?; kill $MON_PID; exit $RC
+            "$RUNNER_TEMP/monitor.sh" & MON_PID=$!; "$RUNNER_TEMP/run-shard.sh" com.record360.app.test.tests "$PATH_TEST_SUITE" ${{ strategy.job-total }} ${{ matrix.shard }}; RC=$?; kill $MON_PID; exit $RC
 
       - name: Execute custom instrument test ${{ inputs.instrument_options }} on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options != '' }}"
@@ -265,7 +299,7 @@ jobs:
         if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-suite-${{ matrix.version }}
+          name: test-suite-${{ matrix.version }}-shard-${{ matrix.shard }}
           path: |
             app/build/outputs/*/connected/*
             app/build/reports/androidTests/connected/**
@@ -274,7 +308,7 @@ jobs:
         uses: dorny/test-reporter@v1
         if: success() || failure()
         with:
-          name: Report Testsuite on API ${{ matrix.version }}
+          name: Report Testsuite on API ${{ matrix.version }} (shard ${{ matrix.shard }})
           path: app/build/outputs/*/connected/**/flavors/**/*.xml
           reporter: java-junit
           fail-on-empty: 'false'
@@ -344,7 +378,10 @@ jobs:
         with:
           pattern: test-suite-*
           path: results
-          merge-multiple: true
+          # Each shard's JUnit XML has the same file name (it's keyed on the
+          # device, not the shard), so merging would overwrite all but one —
+          # keep each artifact in its own results/<artifact-name>/ folder.
+          merge-multiple: false
 
       # -------------------- PARSE JUNIT XML --------------------
       # Parsed once here; both the Allure conversion step and the Google
@@ -363,8 +400,9 @@ jobs:
           # (dorny/test-reporter) already reads from — the raw per-device
           # JUnit XML, not the duplicate formatted copy under
           # app/build/reports/androidTests/connected/.
-          PRIMARY_GLOB  = "results/outputs/*/connected/**/flavors/**/*.xml"
-          FALLBACK_GLOB = "results/outputs/**/*.xml"
+          # One results/test-suite-<api>-shard-<n>/ folder per shard.
+          PRIMARY_GLOB  = "results/*/outputs/*/connected/**/flavors/**/*.xml"
+          FALLBACK_GLOB = "results/*/outputs/**/*.xml"
 
           files = glob.glob(PRIMARY_GLOB, recursive=True)
           if not files:
