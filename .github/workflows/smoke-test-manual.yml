@@ -43,6 +43,17 @@ on:
           - 'Feature'
           - 'Staging'
           - 'Release'
+      browser:
+        description: 'Browser'
+        required: true
+        type: choice
+        default: 'Chrome (default)'
+        options:
+          - 'Chrome (default)'
+          - 'Chrome (tablet)'
+          - 'Chrome (mobile)'
+          - 'Firefox'
+          - 'Edge'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -55,11 +66,21 @@ jobs:
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
       max_parallel: ${{ steps.set.outputs.max_parallel }}
+      capabilities: ${{ steps.set.outputs.capabilities }}
     steps:
       - name: Resolve suites & parallelism from run mode
         id: set
         run: |
           RUN_MODE="${{ github.event.inputs.runMode }}"
+          BROWSER="${{ github.event.inputs.browser }}"
+
+          case "$BROWSER" in
+            "Chrome (tablet)") CAPABILITIES=chrome-tablet ;;
+            "Chrome (mobile)") CAPABILITIES=chrome-mobile ;;
+            "Firefox") CAPABILITIES=firefox ;;
+            "Edge") CAPABILITIES=edge ;;
+            *) CAPABILITIES=chrome ;;
+          esac
 
           SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\""}'
           SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\""}'
@@ -96,9 +117,11 @@ jobs:
           echo "Run mode: $RUN_MODE"
           echo "Matrix: $MATRIX"
           echo "Max parallel: $MAX_PARALLEL"
+          echo "Browser: $BROWSER -> CAPABILITIES=$CAPABILITIES"
 
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
           echo "max_parallel=$MAX_PARALLEL" >> $GITHUB_OUTPUT
+          echo "capabilities=$CAPABILITIES" >> $GITHUB_OUTPUT
 
   chrome-ubuntu:
     needs: prepare-matrix
@@ -153,7 +176,7 @@ jobs:
         cd wdio
         ${{ matrix.runCommand }} 2>&1 | tee ../specs-reporter.log
       env:
-        CAPABILITIES: chrome
+        CAPABILITIES: ${{ needs.prepare-matrix.outputs.capabilities }}
         MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
 
@@ -199,6 +222,7 @@ jobs:
         suite=${{ matrix.suite }}
         env=${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
         tickets=${{ github.event.inputs.tickets || 'N/A' }}
+        browser=${{ github.event.inputs.browser }} (${{ needs.prepare-matrix.outputs.capabilities }})
         ENVEOF
 
     - name: Generate Allure Report
@@ -888,6 +912,7 @@ jobs:
         export BRANCH_WDIO="${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}"
         export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}"
         export ENV_URL="${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}"
+        export BROWSER="${{ github.event.inputs.browser }} (${{ needs.prepare-matrix.outputs.capabilities }})"
 
         TICKETS="${{ github.event.inputs.tickets }}"
         export TICKETS="${TICKETS:-—}"

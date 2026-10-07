@@ -39,7 +39,7 @@
               },
               {
                 "textParagraph": {
-                  "text": "🧪 <b>Total:</b> ${TC_TOTAL}<br>✅ <b>Passed:</b> ${TC_PASSED} (${TC_PASS_RATE}%)<br>❌ <b>Failed:</b> ${TC_FAILED}<br>⏭️ <b>Skipped:</b> ${TC_SKIPPED}<br>🔁 <b>Retries:</b> ${RETRIES}<br>⏱️ <b>Duration:</b> ${DURATION}<br>🌿 <b>Branch auto:</b> <code>${BRANCH_WDIO}</code><br>🌿 <b>Branch code:</b> <code>${BRANCH_DASHBOARD}</code><br>🌐 <b>URL:</b> ${ENV_URL}<br>📝 <b>Note:</b> ${TICKETS}"
+                  "text": "🧪 <b>Total:</b> ${TC_TOTAL}<br>✅ <b>Passed:</b> ${TC_PASSED} (${TC_PASS_RATE}%)<br>❌ <b>Failed:</b> ${TC_FAILED}<br>⏭️ <b>Skipped:</b> ${TC_SKIPPED}<br>🔁 <b>Retries:</b> ${RETRIES}<br>⏱️ <b>Duration:</b> ${DURATION}<br>🌿 <b>Branch auto:</b> <code>${BRANCH_WDIO}</code><br>🌿 <b>Branch code:</b> <code>${BRANCH_DASHBOARD}</code><br>🌐 <b>URL:</b> ${ENV_URL}<br>📱 <b>Browser:</b> ${BROWSER}<br>📝 <b>Note:</b> ${TICKETS}"
                 }
               },
               {
