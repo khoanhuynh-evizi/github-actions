@@ -85,6 +85,7 @@ jobs:
           SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\""}'
           SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\""}'
           REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json"}'
+          FEATURE='{"suite":"feature","suiteType":"Feature","suiteLabel":"Feature Test","runCommand":"yarn test:run-config --config ./run-configs/feature.json"}'
           SANITY='{"suite":"sanity","suiteType":"Sanity","suiteLabel":"Sanity Test","runCommand":"yarn test:run-config --config ./run-configs/sanity.json"}'
 
           case "$RUN_MODE" in
@@ -108,8 +109,12 @@ jobs:
               MATRIX="[$SMOKE,$REGRESSION,$SANITY]"
               MAX_PARALLEL=1
               ;;
+            "Only Feature")
+              MATRIX="[$FEATURE]"
+              MAX_PARALLEL=1
+              ;;
             *)
-              MATRIX="[$SMOKE,$REGRESSION,$SANITY]"
+              MATRIX="[$SMOKE,$REGRESSION,$SANITY,$FEATURE]"
               MAX_PARALLEL=3
               ;;
           esac
