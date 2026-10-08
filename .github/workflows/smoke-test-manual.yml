@@ -185,6 +185,29 @@ jobs:
         MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
 
+    # Prefer the version WDIO actually launched (spec reporter prints
+    # "Running: chrome (v141.0.7390.54) on linux"); fall back to the
+    # browser binary preinstalled on the runner.
+    - name: Detect browser version
+      id: browser_version
+      if: always()
+      run: |
+        VERSION=$(grep -oE 'Running: [A-Za-z-]+ \(v[0-9][0-9.]*\)' specs-reporter.log 2>/dev/null \
+          | head -1 | sed -E 's/.*\(v([0-9.]+)\).*/\1/')
+
+        if [ -z "$VERSION" ]; then
+          case "${{ needs.prepare-matrix.outputs.capabilities }}" in
+            firefox) BIN=firefox ;;
+            edge)    BIN=microsoft-edge ;;
+            *)       BIN=google-chrome ;;
+          esac
+          VERSION=$($BIN --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)
+        fi
+
+        VERSION="${VERSION:-unknown}"
+        echo "Browser version: $VERSION"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
     - name: WDIO Test Checker
       if: always()
       run: |
@@ -228,6 +251,7 @@ jobs:
         env=${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
         tickets=${{ github.event.inputs.tickets || 'N/A' }}
         browser=${{ github.event.inputs.browser }} (${{ needs.prepare-matrix.outputs.capabilities }})
+        browser_version=${{ steps.browser_version.outputs.version }}
         ENVEOF
 
     - name: Generate Allure Report
@@ -917,7 +941,7 @@ jobs:
         export BRANCH_WDIO="${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}"
         export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}"
         export ENV_URL="${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}"
-        export BROWSER="${{ github.event.inputs.browser }} (${{ needs.prepare-matrix.outputs.capabilities }})"
+        export BROWSER="${{ github.event.inputs.browser }}-v${{ steps.browser_version.outputs.version }}"
 
         TICKETS="${{ github.event.inputs.tickets }}"
         export TICKETS="${TICKETS:-—}"
