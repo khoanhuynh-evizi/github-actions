@@ -18,7 +18,7 @@ on:
         required: false
         default: ''
       tickets:
-        description: 'Tickets (Optional)'
+        description: 'Notes (Optional)'
         required: false
         default: ''
       runMode:
@@ -43,26 +43,49 @@ on:
           - 'Feature'
           - 'Staging'
           - 'Release'
+      browser:
+        description: 'Browser'
+        required: true
+        type: choice
+        default: 'Chrome (default)'
+        options:
+          - 'Chrome (default)'
+          - 'Chrome (tablet)'
+          - 'Chrome (mobile)'
+          - 'Firefox'
+          - 'Edge'
 
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
+
   prepare-matrix:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
       max_parallel: ${{ steps.set.outputs.max_parallel }}
+      capabilities: ${{ steps.set.outputs.capabilities }}
     steps:
       - name: Resolve suites & parallelism from run mode
         id: set
         run: |
           RUN_MODE="${{ github.event.inputs.runMode }}"
+          BROWSER="${{ github.event.inputs.browser }}"
+
+          case "$BROWSER" in
+            "Chrome (tablet)") CAPABILITIES=chrome-tablet ;;
+            "Chrome (mobile)") CAPABILITIES=chrome-mobile ;;
+            "Firefox") CAPABILITIES=firefox ;;
+            "Edge") CAPABILITIES=edge ;;
+            *) CAPABILITIES=chrome ;;
+          esac
 
           SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\""}'
           SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\""}'
           REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json"}'
+          FEATURE='{"suite":"feature","suiteType":"Feature","suiteLabel":"Feature Test","runCommand":"yarn test:run-config --config ./run-configs/feature.json"}'
           SANITY='{"suite":"sanity","suiteType":"Sanity","suiteLabel":"Sanity Test","runCommand":"yarn test:run-config --config ./run-configs/sanity.json"}'
 
           case "$RUN_MODE" in
@@ -86,8 +109,12 @@ jobs:
               MATRIX="[$SMOKE,$REGRESSION,$SANITY]"
               MAX_PARALLEL=1
               ;;
+            "Only Feature")
+              MATRIX="[$FEATURE]"
+              MAX_PARALLEL=1
+              ;;
             *)
-              MATRIX="[$SMOKE,$REGRESSION,$SANITY]"
+              MATRIX="[$SMOKE,$REGRESSION,$SANITY,$FEATURE]"
               MAX_PARALLEL=3
               ;;
           esac
@@ -95,9 +122,11 @@ jobs:
           echo "Run mode: $RUN_MODE"
           echo "Matrix: $MATRIX"
           echo "Max parallel: $MAX_PARALLEL"
+          echo "Browser: $BROWSER -> CAPABILITIES=$CAPABILITIES"
 
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
           echo "max_parallel=$MAX_PARALLEL" >> $GITHUB_OUTPUT
+          echo "capabilities=$CAPABILITIES" >> $GITHUB_OUTPUT
 
   chrome-ubuntu:
     needs: prepare-matrix
@@ -152,9 +181,32 @@ jobs:
         cd wdio
         ${{ matrix.runCommand }} 2>&1 | tee ../specs-reporter.log
       env:
-        CAPABILITIES: chrome
+        CAPABILITIES: ${{ needs.prepare-matrix.outputs.capabilities }}
         MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
+
+    # Prefer the version WDIO actually launched (spec reporter prints
+    # "Running: chrome (v141.0.7390.54) on linux"); fall back to the
+    # browser binary preinstalled on the runner.
+    - name: Detect browser version
+      id: browser_version
+      if: always()
+      run: |
+        VERSION=$(grep -oE 'Running: [A-Za-z-]+ \(v[0-9][0-9.]*\)' specs-reporter.log 2>/dev/null \
+          | head -1 | sed -E 's/.*\(v([0-9.]+)\).*/\1/')
+
+        if [ -z "$VERSION" ]; then
+          case "${{ needs.prepare-matrix.outputs.capabilities }}" in
+            firefox) BIN=firefox ;;
+            edge)    BIN=microsoft-edge ;;
+            *)       BIN=google-chrome ;;
+          esac
+          VERSION=$($BIN --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)
+        fi
+
+        VERSION="${VERSION:-unknown}"
+        echo "Browser version: $VERSION"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
 
     - name: WDIO Test Checker
       if: always()
@@ -198,11 +250,68 @@ jobs:
         suite=${{ matrix.suite }}
         env=${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
         tickets=${{ github.event.inputs.tickets || 'N/A' }}
+        browser=${{ github.event.inputs.browser }} (${{ needs.prepare-matrix.outputs.capabilities }})
+        browser_version=${{ steps.browser_version.outputs.version }}
         ENVEOF
 
     - name: Generate Allure Report
       if: ${{ !cancelled() }}
       run: npx --yes allure-commandline@2.37.0 generate wdio/reports --clean -o wdio/allure-report --name "[Dashboard] ${{ github.event.inputs.reportType }} - ${{ matrix.suiteLabel }} Report"
+
+    # Allure counts every it() per role as a "test case", so its native
+    # totals dwarf the number of spec files actually run. Capture the
+    # original test-case counts for the Chat card first, then overwrite
+    # the summary widgets with spec-file counts from the WDIO spec
+    # reporter so the report's headline numbers match the run.
+    - name: Show spec-file counts in Allure summary
+      if: ${{ !cancelled() }}
+      run: |
+        # ── Capture original test-case counts for the Chat card first ──────
+        SUMMARY=wdio/allure-report/widgets/summary.json
+        if [ -f "$SUMMARY" ]; then
+          TC_TOTAL=$(jq '.statistic.total' "$SUMMARY")
+          TC_PASSED=$(jq '.statistic.passed' "$SUMMARY")
+          TC_FAILED=$(jq '.statistic.failed + .statistic.broken' "$SUMMARY")
+          TC_SKIPPED=$(jq '.statistic.skipped' "$SUMMARY")
+        else
+          TC_TOTAL=0; TC_PASSED=0; TC_FAILED=0; TC_SKIPPED=0
+        fi
+        TC_DENOM=$(( TC_TOTAL - TC_SKIPPED ))
+        TC_PASS_RATE=$(( TC_DENOM > 0 ? TC_PASSED * 100 / TC_DENOM : 0 ))
+
+        echo "TC_TOTAL=$TC_TOTAL" >> $GITHUB_ENV
+        echo "TC_PASSED=$TC_PASSED" >> $GITHUB_ENV
+        echo "TC_FAILED=$TC_FAILED" >> $GITHUB_ENV
+        echo "TC_SKIPPED=$TC_SKIPPED" >> $GITHUB_ENV
+        echo "TC_PASS_RATE=$TC_PASS_RATE" >> $GITHUB_ENV
+
+        # ── Parse spec-file counts from the WDIO spec reporter ─────────────
+        LOG=specs-reporter.log
+        if ! grep -q "Spec Files:" "$LOG"; then
+          echo "No 'Spec Files:' line found — keeping Allure's own counts."
+          exit 0
+        fi
+
+        LINE=$(grep "Spec Files:" "$LOG" | tail -1)
+
+        PASSED=$(echo "$LINE" | grep -oP '\d+(?=\s+passed)' || echo 0)
+        FAILED=$(echo "$LINE" | grep -oP '\d+(?=\s+failed)' || echo 0)
+        SKIPPED=$(echo "$LINE" | grep -oP '\d+(?=\s+skipped)' || echo 0)
+        TOTAL=$(echo "$LINE" | grep -oP '\d+(?=\s+total)' || echo 0)
+
+        # ── Patch the widgets Allure renders on the landing page ───────────
+        for F in wdio/allure-report/widgets/summary.json \
+                 wdio/allure-report/widgets/summaryChart.json; do
+          [ -f "$F" ] || continue
+          jq --argjson p "$PASSED" --argjson f "$FAILED" \
+             --argjson s "$SKIPPED" --argjson t "$TOTAL" \
+             '.statistic.passed = $p | .statistic.failed = $f |
+              .statistic.broken = 0 | .statistic.unknown = 0 |
+              .statistic.skipped = $s | .statistic.total = $t' \
+             "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+        done
+
+        echo "Allure summary now shows spec files: total=$TOTAL passed=$PASSED failed=$FAILED skipped=$SKIPPED"
 
     - name: Save history for next run
       if: ${{ !cancelled() }}
@@ -274,24 +383,9 @@ jobs:
     - name: Parse Spec Reporter Result
       if: ${{ !cancelled() }}
       run: |
-        # ── Test case counts from Allure (one per it() result, per role) ────
-        SUMMARY=wdio/allure-report/widgets/summary.json
-        if [ -f "$SUMMARY" ]; then
-          TC_TOTAL=$(jq '.statistic.total' "$SUMMARY")
-          TC_PASSED=$(jq '.statistic.passed' "$SUMMARY")
-          TC_FAILED=$(jq '.statistic.failed + .statistic.broken' "$SUMMARY")
-          TC_SKIPPED=$(jq '.statistic.skipped' "$SUMMARY")
-        else
-          TC_TOTAL=0; TC_PASSED=0; TC_FAILED=0; TC_SKIPPED=0
-        fi
-        TC_DENOM=$(( TC_TOTAL - TC_SKIPPED ))
-        TC_PASS_RATE=$(( TC_DENOM > 0 ? TC_PASSED * 100 / TC_DENOM : 0 ))
-
-        echo "TC_TOTAL=$TC_TOTAL" >> $GITHUB_ENV
-        echo "TC_PASSED=$TC_PASSED" >> $GITHUB_ENV
-        echo "TC_FAILED=$TC_FAILED" >> $GITHUB_ENV
-        echo "TC_SKIPPED=$TC_SKIPPED" >> $GITHUB_ENV
-        echo "TC_PASS_RATE=$TC_PASS_RATE" >> $GITHUB_ENV
+        # TC_* (test-case counts from Allure) are exported upstream in
+        # "Show spec-file counts in Allure summary", before the summary
+        # widgets get overwritten with spec-file counts.
 
         # ── Spec file counts from WDIO spec reporter ────────────────────────
         LOG=specs-reporter.log
@@ -847,6 +941,7 @@ jobs:
         export BRANCH_WDIO="${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}"
         export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}"
         export ENV_URL="${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}"
+        export BROWSER="${{ github.event.inputs.browser }}-v${{ steps.browser_version.outputs.version }}"
 
         TICKETS="${{ github.event.inputs.tickets }}"
         export TICKETS="${TICKETS:-—}"
@@ -856,3 +951,4 @@ jobs:
         curl -X POST "https://chat.googleapis.com/v1/spaces/AAQAxcsMc74/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=jLqxbYzy2DEH59cMJ7augnU2hj2SEis3hsSjAUY7xIY" \
           -H "Content-Type: application/json" \
           -d @payload.json
+
