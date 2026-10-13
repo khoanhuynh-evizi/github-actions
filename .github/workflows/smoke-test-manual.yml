@@ -33,6 +33,7 @@ on:
           - 'Only Smoke Lite'
           - 'Only Regression'
           - 'Only Sanity'
+          - 'Only Feature'
       reportType:
         description: 'Report type'
         required: true
