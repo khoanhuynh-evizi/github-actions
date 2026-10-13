@@ -87,7 +87,7 @@ jobs:
           SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\""}'
           SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\""}'
           REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json"}'
-          REGRESSION_FULL='{"suite":"regression-full","suiteType":"Regression (Full)","suiteLabel":"Regression (Full) Test","runCommand":"yarn test:sharded --shards=4 --suite=\"Regression Test\""}'
+          REGRESSION_FULL='{"suite":"regression-full","suiteType":"Regression (Full)","suiteLabel":"Regression (Full) Test","runCommand":"yarn test:sharded --shards=2 --suite=\"Regression Test\""}'
           FEATURE='{"suite":"feature","suiteType":"Feature","suiteLabel":"Feature Test","runCommand":"yarn test:run-config --config ./run-configs/feature.json"}'
           SANITY='{"suite":"sanity","suiteType":"Sanity","suiteLabel":"Sanity Test","runCommand":"yarn test:run-config --config ./run-configs/sanity.json"}'
 
@@ -369,7 +369,7 @@ jobs:
       with:
         name: allure-deploy-${{ matrix.suite }}
         path: deploy/
-        retention-days: 1
+        retention-days: 7
 
     # TEMPORARY (testing only): points at release-features-test.yml on the
     # test-allure-report branch, whose test-cross-repo-deploy job runs the
