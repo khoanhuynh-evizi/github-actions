@@ -910,12 +910,8 @@ jobs:
 
           const v = (k) => process.env[k] || "";
 
-          // e.g. "Record360 Android Instrumentation Tests 10/14/2026 · 11:34:39 - 12:15:05 (40m 25s)"
-          const runInfo = [v("RUN_DATE"), v("RUN_TIME_RANGE")].filter(Boolean).join(" · ");
-          const title = (base) => (runInfo ? `${base} ${runInfo}` : base);
-
           export default defineConfig({
-            name: title("Record360 Android Instrumentation Tests"),
+            name: "Record360 Android Instrumentation Tests",
             output: "./allure-report",
             historyPath: "./history.jsonl",
             appendHistory: true,
@@ -937,14 +933,14 @@ jobs:
             plugins: {
               awesome: {
                 options: {
-                  reportName: title("Record360 Android Instrumentation Tests"),
+                  reportName: "Record360 Android Instrumentation Tests",
                   singleFile: false,
                   reportLanguage: "en",
                 },
               },
               dashboard: {
                 options: {
-                  reportName: title("Record360 Android — Dashboard"),
+                  reportName: "Record360 Android — Dashboard",
                   reportLanguage: "en",
                 },
               },
@@ -957,6 +953,43 @@ jobs:
             || npx --yes allure generate allure-results
           echo "---- generated report tree ----"
           find allure-report -maxdepth 2 -name index.html || true
+
+          # Allure renders the header subtitle (data-testid="report-data") as
+          # "October 14, 2026 at 4:51:12 PM (32m 35s)" from the test results,
+          # in the viewer's locale, with no option to change it. Swap it for
+          # the dashboard-style "10/14/2026 · 16:21:10 - 16:59:50 (38m 40s)"
+          # whole-workflow range (GMT+7) once the page has rendered it.
+          if [ -n "${RUN_DATE:-}" ] && [ -n "${RUN_TIME_RANGE:-}" ]; then
+            python3 - <<'PYEOF'
+          import glob
+          import json
+          import os
+
+          subtitle = f'{os.environ["RUN_DATE"]} · {os.environ["RUN_TIME_RANGE"]}'
+          script = """<script>
+          (function () {
+            var text = %s;
+            function fix() {
+              document.querySelectorAll('[data-testid="report-data"]').forEach(function (el) {
+                if (el.textContent !== text) el.textContent = text;
+              });
+            }
+            new MutationObserver(fix).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+            fix();
+          })();
+          </script>
+          """ % json.dumps(subtitle)
+
+          for path in glob.glob("allure-report/**/index.html", recursive=True):
+              with open(path, encoding="utf-8") as f:
+                  html = f.read()
+              if "</body>" not in html:
+                  continue
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(html.replace("</body>", script + "</body>", 1))
+              print(f"Set report subtitle in {path}: {subtitle}")
+          PYEOF
+          fi
         shell: bash
 
       - name: Save Allure history for next run
