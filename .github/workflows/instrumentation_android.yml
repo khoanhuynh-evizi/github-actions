@@ -579,14 +579,17 @@ jobs:
           # ── Build test → feature map from testRun.json ────────────────────────
           # testCases[].name is "<package>.<Class>#<method>" for classes with
           # several @Test methods, or just "<package>.<Class>" for classes
-          # with a single test — not the bare simple class name.
+          # with a single test — not the bare simple class name. Each test
+          # case may also carry an "id" (e.g. "ST17") for the sheet's ID column.
           feature_of = {}
+          id_of = {}
           try:
               with open(TEST_RUN_JSON) as f:
                   suite = json.load(f)
               for feature in suite.get("testsuite", []):
                   for tc in feature.get("testCases", []):
                       feature_of[tc["name"]] = feature["name"]
+                      id_of[tc["name"]] = str(tc.get("id") or "")
           except FileNotFoundError:
               print(f"⚠️ {TEST_RUN_JSON} not found — failed tests will be grouped under 'Unknown'")
 
@@ -600,17 +603,23 @@ jobs:
               return feature_of.get(f"{pkg_class}#{method}") \
                   or feature_of.get(pkg_class, "Unknown")
 
+          def id_for(pkg_class, method):
+              return id_of.get(f"{pkg_class}#{method}") \
+                  or id_of.get(pkg_class, "")
+
           # ── Load failed tests from tests.json ─────────────────────────────────
           with open("tests.json") as f:
               tests = json.load(f)
 
+          # feature → [(test case ID, "package.Class#method"), ...]
           feature_map = OrderedDict()
           for t in tests:
               if t["status"] not in ("failed", "broken"):
                   continue
               pkg_class = pkg_class_of(t["classname"])
               label = f'{pkg_class}#{t["name"]}'
-              feature_map.setdefault(feature_for(pkg_class, t["name"]), []).append(label)
+              feature_map.setdefault(feature_for(pkg_class, t["name"]), []).append(
+                  (id_for(pkg_class, t["name"]), label))
 
           if not feature_map:
               print("No failed test cases found — skipping Google Sheets export.")
@@ -620,8 +629,8 @@ jobs:
           print(f"Found {total_failed} failed test case(s) across {len(feature_map)} feature(s):")
           for feat, tcs in feature_map.items():
               print(f"  [{feat}]")
-              for tc in tcs:
-                  print(f"    • {tc}")
+              for tc_id, tc in tcs:
+                  print(f"    • [{tc_id or 'no id'}] {tc}")
 
           # ── Auth ──────────────────────────────────────────────────────────────
           creds   = service_account.Credentials.from_service_account_info(
@@ -644,11 +653,11 @@ jobs:
               idx += 1
 
           # ── Build row data ────────────────────────────────────────────────────
-          # Columns: A=TCs | B=Run | C=Type | D=Status | E=Note | F-Z=empty
+          # Columns: A=ID | B=TCs | C=Run | D=Type | E=Status | F=Note | G-Z=empty
           TOTAL_COLS = 26
-          EMPTY      = [""] * (TOTAL_COLS - 5)
+          EMPTY      = [""] * (TOTAL_COLS - 6)
 
-          header_row          = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
+          header_row          = ["ID", "TCs", "Run", "Type", "Status", "Note"] + EMPTY
           all_rows            = [header_row]
           feature_row_indices = []
           tc_row_indices      = []
@@ -656,10 +665,10 @@ jobs:
           for feat_name, tcs in feature_map.items():
               feature_row_indices.append(len(all_rows))
               all_rows.append([feat_name] + [""] * (TOTAL_COLS - 1))
-              for tc in tcs:
+              for tc_id, tc in tcs:
                   tc_row_indices.append(len(all_rows))
-                  # B=True (boolean) → renders as a checked checkbox after validation applied
-                  all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
+                  # C=True (boolean) → renders as a checked checkbox after validation applied
+                  all_rows.append([tc_id, tc, True, "Existing", "Fail", ""] + EMPTY)
 
           total_rows = len(all_rows)
 
@@ -728,7 +737,7 @@ jobs:
           if tc_row_indices:
               first_tc = tc_row_indices[0]
               last_tc  = tc_row_indices[-1] + 1
-              for col in (1, 2, 3):  # Run, Type, Status
+              for col in (0, 2, 3, 4):  # ID, Run, Type, Status
                   fmt_requests.append({
                       "repeatCell": {
                           "range": cr(first_tc, col, last_tc, col + 1),
@@ -746,13 +755,13 @@ jobs:
           # ── STEP 2 — data validation (checkbox + dropdowns) ───────────────────
           if tc_row_indices:
               val_requests = [
-                  {"setDataValidation": {"range": cr(first_tc, 1, last_tc, 2), "rule": {
-                      "condition": {"type": "BOOLEAN"}, "showCustomUi": True, "strict": True}}},
                   {"setDataValidation": {"range": cr(first_tc, 2, last_tc, 3), "rule": {
+                      "condition": {"type": "BOOLEAN"}, "showCustomUi": True, "strict": True}}},
+                  {"setDataValidation": {"range": cr(first_tc, 3, last_tc, 4), "rule": {
                       "condition": {"type": "ONE_OF_LIST", "values": [
                           {"userEnteredValue": "Existing"}, {"userEnteredValue": "New Feature"}]},
                       "showCustomUi": True, "strict": True}}},
-                  {"setDataValidation": {"range": cr(first_tc, 3, last_tc, 4), "rule": {
+                  {"setDataValidation": {"range": cr(first_tc, 4, last_tc, 5), "rule": {
                       "condition": {"type": "ONE_OF_LIST", "values": [
                           {"userEnteredValue": "Fail"}, {"userEnteredValue": "Pass"}]},
                       "showCustomUi": True, "strict": True}}},
@@ -764,26 +773,26 @@ jobs:
           if tc_row_indices:
               cond_requests = [
                   {"addConditionalFormatRule": {"index": 0, "rule": {
-                      "ranges": [cr(first_tc, 2, last_tc, 3)],
+                      "ranges": [cr(first_tc, 3, last_tc, 4)],
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Existing"}]},
                           "format": {"backgroundColor": GRAY_BG, "textFormat": {"bold": True, "foregroundColor": BLACK}},
                       }}}},
                   {"addConditionalFormatRule": {"index": 1, "rule": {
-                      "ranges": [cr(first_tc, 2, last_tc, 3)],
+                      "ranges": [cr(first_tc, 3, last_tc, 4)],
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "New Feature"}]},
                           "format": {"backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957},
                                      "textFormat": {"bold": True, "foregroundColor": BLACK}},
                       }}}},
                   {"addConditionalFormatRule": {"index": 2, "rule": {
-                      "ranges": [cr(first_tc, 3, last_tc, 4)],
+                      "ranges": [cr(first_tc, 4, last_tc, 5)],
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Fail"}]},
                           "format": {"backgroundColor": RED_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
                       }}}},
                   {"addConditionalFormatRule": {"index": 3, "rule": {
-                      "ranges": [cr(first_tc, 3, last_tc, 4)],
+                      "ranges": [cr(first_tc, 4, last_tc, 5)],
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Pass"}]},
                           "format": {"backgroundColor": GREEN_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
@@ -801,10 +810,10 @@ jobs:
           ).execute()
           print("✅ Data written.")
 
-          # ── STEP 5 — auto-resize A-E + freeze header row ──────────────────────
+          # ── STEP 5 — auto-resize A-F + freeze header row ──────────────────────
           sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": [
               {"autoResizeDimensions": {"dimensions": {
-                  "sheetId": new_sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 5}}},
+                  "sheetId": new_sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 6}}},
               {"updateSheetProperties": {
                   "properties": {"sheetId": new_sheet_id, "gridProperties": {"frozenRowCount": 1}},
                   "fields": "gridProperties.frozenRowCount"}},
