@@ -581,6 +581,7 @@ jobs:
           # several @Test methods, or just "<package>.<Class>" for classes
           # with a single test — not the bare simple class name. Each test
           # case may also carry an "id" (e.g. "ST17") for the sheet's ID column.
+          ID_KEYS = ("id", "testCaseId", "tcId", "caseId", "ID")
           feature_of = {}
           id_of = {}
           try:
@@ -589,7 +590,8 @@ jobs:
               for feature in suite.get("testsuite", []):
                   for tc in feature.get("testCases", []):
                       feature_of[tc["name"]] = feature["name"]
-                      id_of[tc["name"]] = str(tc.get("id") or "")
+                      id_of[tc["name"]] = str(next(
+                          (tc[k] for k in ID_KEYS if tc.get(k)), ""))
           except FileNotFoundError:
               print(f"⚠️ {TEST_RUN_JSON} not found — failed tests will be grouped under 'Unknown'")
 
@@ -660,15 +662,25 @@ jobs:
           header_row          = ["ID", "TCs", "Run", "Type", "Status", "Note"] + EMPTY
           all_rows            = [header_row]
           feature_row_indices = []
-          tc_row_indices      = []
+          # (start, end) row ranges of each feature's test-case rows — the
+          # checkbox/dropdowns/centering are applied per block so they never
+          # land on the feature header rows in between.
+          tc_blocks           = []
 
           for feat_name, tcs in feature_map.items():
               feature_row_indices.append(len(all_rows))
-              all_rows.append([feat_name] + [""] * (TOTAL_COLS - 1))
+              # Feature name goes in the TCs column; the ID column stays for IDs only
+              all_rows.append(["", feat_name] + [""] * (TOTAL_COLS - 2))
+              block_start = len(all_rows)
               for tc_id, tc in tcs:
-                  tc_row_indices.append(len(all_rows))
                   # C=True (boolean) → renders as a checked checkbox after validation applied
                   all_rows.append([tc_id, tc, True, "Existing", "Fail", ""] + EMPTY)
+              tc_blocks.append((block_start, len(all_rows)))
+
+          missing_ids = sum(1 for tcs in feature_map.values() for tc_id, _ in tcs if not tc_id)
+          if missing_ids:
+              print(f"⚠️ {missing_ids} failed test case(s) have no ID in {TEST_RUN_JSON} "
+                    f"(looked for keys {', '.join(ID_KEYS)}) — their ID cell is left empty")
 
           total_rows = len(all_rows)
 
@@ -734,9 +746,7 @@ jobs:
                   }
               })
 
-          if tc_row_indices:
-              first_tc = tc_row_indices[0]
-              last_tc  = tc_row_indices[-1] + 1
+          for first_tc, last_tc in tc_blocks:
               for col in (0, 2, 3, 4):  # ID, Run, Type, Status
                   fmt_requests.append({
                       "repeatCell": {
@@ -753,46 +763,50 @@ jobs:
           print("✅ Cell formatting applied.")
 
           # ── STEP 2 — data validation (checkbox + dropdowns) ───────────────────
-          if tc_row_indices:
-              val_requests = [
-                  {"setDataValidation": {"range": cr(first_tc, 2, last_tc, 3), "rule": {
-                      "condition": {"type": "BOOLEAN"}, "showCustomUi": True, "strict": True}}},
-                  {"setDataValidation": {"range": cr(first_tc, 3, last_tc, 4), "rule": {
-                      "condition": {"type": "ONE_OF_LIST", "values": [
-                          {"userEnteredValue": "Existing"}, {"userEnteredValue": "New Feature"}]},
-                      "showCustomUi": True, "strict": True}}},
-                  {"setDataValidation": {"range": cr(first_tc, 4, last_tc, 5), "rule": {
-                      "condition": {"type": "ONE_OF_LIST", "values": [
-                          {"userEnteredValue": "Fail"}, {"userEnteredValue": "Pass"}]},
-                      "showCustomUi": True, "strict": True}}},
-              ]
+          if tc_blocks:
+              val_requests = []
+              for first_tc, last_tc in tc_blocks:
+                  val_requests += [
+                      {"setDataValidation": {"range": cr(first_tc, 2, last_tc, 3), "rule": {
+                          "condition": {"type": "BOOLEAN"}, "showCustomUi": True, "strict": True}}},
+                      {"setDataValidation": {"range": cr(first_tc, 3, last_tc, 4), "rule": {
+                          "condition": {"type": "ONE_OF_LIST", "values": [
+                              {"userEnteredValue": "Existing"}, {"userEnteredValue": "New Feature"}]},
+                          "showCustomUi": True, "strict": True}}},
+                      {"setDataValidation": {"range": cr(first_tc, 4, last_tc, 5), "rule": {
+                          "condition": {"type": "ONE_OF_LIST", "values": [
+                              {"userEnteredValue": "Fail"}, {"userEnteredValue": "Pass"}]},
+                          "showCustomUi": True, "strict": True}}},
+                  ]
               sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": val_requests}).execute()
               print("✅ Data validation applied.")
 
           # ── STEP 3 — conditional formatting (chip colors) ─────────────────────
-          if tc_row_indices:
+          if tc_blocks:
+              type_ranges   = [cr(a, 3, b, 4) for a, b in tc_blocks]
+              status_ranges = [cr(a, 4, b, 5) for a, b in tc_blocks]
               cond_requests = [
                   {"addConditionalFormatRule": {"index": 0, "rule": {
-                      "ranges": [cr(first_tc, 3, last_tc, 4)],
+                      "ranges": type_ranges,
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Existing"}]},
                           "format": {"backgroundColor": GRAY_BG, "textFormat": {"bold": True, "foregroundColor": BLACK}},
                       }}}},
                   {"addConditionalFormatRule": {"index": 1, "rule": {
-                      "ranges": [cr(first_tc, 3, last_tc, 4)],
+                      "ranges": type_ranges,
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "New Feature"}]},
                           "format": {"backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957},
                                      "textFormat": {"bold": True, "foregroundColor": BLACK}},
                       }}}},
                   {"addConditionalFormatRule": {"index": 2, "rule": {
-                      "ranges": [cr(first_tc, 4, last_tc, 5)],
+                      "ranges": status_ranges,
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Fail"}]},
                           "format": {"backgroundColor": RED_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
                       }}}},
                   {"addConditionalFormatRule": {"index": 3, "rule": {
-                      "ranges": [cr(first_tc, 4, last_tc, 5)],
+                      "ranges": status_ranges,
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Pass"}]},
                           "format": {"backgroundColor": GREEN_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
@@ -1034,7 +1048,7 @@ jobs:
               f.write(payload)
           PYEOF
 
-          curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
+          curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
             -H "Content-Type: application/json" \
             -d @payload.json
         shell: bash
