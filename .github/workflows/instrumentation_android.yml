@@ -369,6 +369,16 @@ jobs:
             DURATION_STR="$(( DURATION / 60 ))m $(( DURATION % 60 ))s"
           fi
           echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
+
+          # Same "HH:MM:SS - HH:MM:SS (40m 25s)" shape as the dashboard
+          # report header, in GMT+7, spanning the whole workflow run.
+          H=$(( DURATION / 3600 )); M=$(( DURATION % 3600 / 60 )); S=$(( DURATION % 60 ))
+          if [ "$H" -gt 0 ]; then RANGE_DUR="${H}h ${M}m ${S}s"; else RANGE_DUR="${M}m ${S}s"; fi
+          RUN_START_HMS=$(TZ=Asia/Ho_Chi_Minh date -d "@$START" +%H:%M:%S)
+          RUN_END_HMS=$(TZ=Asia/Ho_Chi_Minh date -d "@$NOW" +%H:%M:%S)
+          echo "RUN_DATE=$(TZ=Asia/Ho_Chi_Minh date -d "@$START" +%m/%d/%Y)" >> $GITHUB_ENV
+          echo "RUN_TIME_RANGE=$RUN_START_HMS - $RUN_END_HMS ($RANGE_DUR)" >> $GITHUB_ENV
+          echo "RUN_START_EPOCH=$START" >> $GITHUB_ENV
         shell: bash
 
       - name: Download test reports
@@ -391,6 +401,7 @@ jobs:
         if: always()
         run: |
           python3 << 'PYEOF'
+          import datetime
           import glob
           import json
           import os
@@ -422,10 +433,24 @@ jobs:
               for suite in suites:
                   if suite.tag != "testsuite":
                       continue
+                  # The suite's `timestamp` is when that shard's run started
+                  # (runner-local time, i.e. UTC); tests in it ran back to back
+                  # in file order, so each one starts after the previous ones.
+                  start_ms = None
+                  try:
+                      ts = datetime.datetime.fromisoformat(suite.get("timestamp", ""))
+                      if ts.tzinfo is None:
+                          ts = ts.replace(tzinfo=datetime.timezone.utc)
+                      start_ms = int(ts.timestamp() * 1000)
+                  except ValueError:
+                      pass
                   for tc in suite.findall("testcase"):
                       classname = tc.get("classname") or suite.get("name") or "Unknown"
                       name      = tc.get("name", "unknown")
                       time_s    = tc.get("time", "0")
+                      tc_start_ms = start_ms
+                      if start_ms is not None:
+                          start_ms += int(float(time_s or 0) * 1000)
 
                       failure = tc.find("failure")
                       error   = tc.find("error")
@@ -443,6 +468,7 @@ jobs:
                           "classname": classname,
                           "name": name,
                           "time": time_s,
+                          "start_ms": tc_start_ms,
                           "status": status,
                           "message": (node.get("message", "") if node is not None else ""),
                           "trace": ((node.text or "").strip() if node is not None else ""),
@@ -514,10 +540,17 @@ jobs:
 
           STATUS_MAP = {"passed": "passed", "failed": "failed", "broken": "broken", "skipped": "skipped"}
 
-          cursor = int(time.time() * 1000)
+          # Real start times from the JUnit XML when available, so Allure's
+          # own date/duration header reflects when the tests actually ran;
+          # otherwise lay tests out back to back from the workflow start.
+          cursor = int(os.environ.get("RUN_START_EPOCH") or time.time()) * 1000
           for t in tests:
               dur_ms = max(1, int(float(t.get("time") or 0) * 1000))
-              start, cursor = cursor, cursor + dur_ms
+              if t.get("start_ms") is not None:
+                  start = t["start_ms"]
+              else:
+                  start, cursor = cursor, cursor + dur_ms
+              stop = start + dur_ms
 
               result = {
                   "uuid": str(uuid.uuid4()),
@@ -527,7 +560,7 @@ jobs:
                   "status": STATUS_MAP.get(t["status"], "broken"),
                   "stage": "finished",
                   "start": start,
-                  "stop": cursor,
+                  "stop": stop,
                   "labels": [
                       {"name": "suite", "value": "Smoke"},
                       {"name": "feature", "value": feature_for(t["classname"], t["name"])},
@@ -874,8 +907,12 @@ jobs:
 
           const v = (k) => process.env[k] || "";
 
+          // e.g. "Record360 Android Instrumentation Tests 10/14/2026 · 11:34:39 - 12:15:05 (40m 25s)"
+          const runInfo = [v("RUN_DATE"), v("RUN_TIME_RANGE")].filter(Boolean).join(" · ");
+          const title = (base) => (runInfo ? `${base} ${runInfo}` : base);
+
           export default defineConfig({
-            name: "Record360 Android Instrumentation Tests",
+            name: title("Record360 Android Instrumentation Tests"),
             output: "./allure-report",
             historyPath: "./history.jsonl",
             appendHistory: true,
@@ -897,14 +934,14 @@ jobs:
             plugins: {
               awesome: {
                 options: {
-                  reportName: "Record360 Android Instrumentation Tests",
+                  reportName: title("Record360 Android Instrumentation Tests"),
                   singleFile: false,
                   reportLanguage: "en",
                 },
               },
               dashboard: {
                 options: {
-                  reportName: "Record360 Android — Dashboard",
+                  reportName: title("Record360 Android — Dashboard"),
                   reportLanguage: "en",
                 },
               },
