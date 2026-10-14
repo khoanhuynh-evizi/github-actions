@@ -83,8 +83,8 @@ jobs:
           RUN_MODE="${{ github.event.inputs.runMode }}"
           BROWSER="${{ github.event.inputs.browser }}"
 
-          # Number of parallel jobs (runners) the Full Regression is split into
-          FULL_REGRESSION_SHARDS=4
+          # Number of parallel jobs (runners) every suite is split into
+          SHARDS=4
 
           case "$BROWSER" in
             "Chrome (tablet)") CAPABILITIES=chrome-tablet ;;
@@ -94,46 +94,43 @@ jobs:
             *) CAPABILITIES=chrome ;;
           esac
 
-          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\""}'
-          SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\""}'
-          REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json"}'
-          # "shards" splits this suite into that many test jobs; each one appends --shard=<i>/<shards>
-          REGRESSION_FULL='{"suite":"regression-full","suiteType":"Regression (Full)","suiteLabel":"Regression (Full) Test","runCommand":"yarn test:local --suite=\"Regression Test\"","shards":'"$FULL_REGRESSION_SHARDS"'}'
-          FEATURE='{"suite":"feature","suiteType":"Feature","suiteLabel":"Feature Test","runCommand":"yarn test:run-config --config ./run-configs/feature.json"}'
-          SANITY='{"suite":"sanity","suiteType":"Sanity","suiteLabel":"Sanity Test","runCommand":"yarn test:run-config --config ./run-configs/sanity.json"}'
+          # "shards" splits a suite into that many test jobs; each one appends --shard=<i>/<shards>
+          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\"","shards":'"$SHARDS"'}'
+          SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\"","shards":'"$SHARDS"'}'
+          REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json","shards":'"$SHARDS"'}'
+          REGRESSION_FULL='{"suite":"regression-full","suiteType":"Regression (Full)","suiteLabel":"Regression (Full) Test","runCommand":"yarn test:local --suite=\"Regression Test\"","shards":'"$SHARDS"'}'
+          FEATURE='{"suite":"feature","suiteType":"Feature","suiteLabel":"Feature Test","runCommand":"yarn test:run-config --config ./run-configs/feature.json","shards":'"$SHARDS"'}'
+          SANITY='{"suite":"sanity","suiteType":"Sanity","suiteLabel":"Sanity Test","runCommand":"yarn test:run-config --config ./run-configs/sanity.json","shards":'"$SHARDS"'}'
+
+          # Every suite is sharded now, so cap concurrency at $SHARDS regardless of how
+          # many suites are selected — a steady pool of runners instead of spiking with
+          # (suites × shards) jobs all at once.
+          MAX_PARALLEL=$SHARDS
 
           case "$RUN_MODE" in
             "Only Smoke")
               MATRIX="[$SMOKE]"
-              MAX_PARALLEL=1
               ;;
             "Only Smoke Lite")
               MATRIX="[$SMOKE_LITE]"
-              MAX_PARALLEL=1
               ;;
             "Only Regression")
               MATRIX="[$REGRESSION]"
-              MAX_PARALLEL=1
               ;;
             "Only (Full) Regression")
               MATRIX="[$REGRESSION_FULL]"
-              MAX_PARALLEL=$FULL_REGRESSION_SHARDS
               ;;
             "Only Sanity")
               MATRIX="[$SANITY]"
-              MAX_PARALLEL=1
               ;;
             "Smoke - Regression - Sanity (Queue)")
               MATRIX="[$SMOKE,$REGRESSION,$SANITY]"
-              MAX_PARALLEL=1
               ;;
             "Only Feature")
               MATRIX="[$FEATURE]"
-              MAX_PARALLEL=1
               ;;
             *)
               MATRIX="[$SMOKE,$REGRESSION,$SANITY,$FEATURE]"
-              MAX_PARALLEL=3
               ;;
           esac
 
