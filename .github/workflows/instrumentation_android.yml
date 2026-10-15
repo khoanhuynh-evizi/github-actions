@@ -22,12 +22,12 @@ on:
         type: string
       main-branch:
         description: 'main branch(e.g., master)'
-        required: false
+        required: true
         type: string
         default: 'master'
       submodule-branch:
         description: 'submodule branch(e.g., master)'
-        required: false
+        required: true
         type: string
       device-profile:
         description: 'Android device profile to use (e.g., pixel_7, pixel_6, Nexus 5X, pixel_tablet)'
@@ -1106,7 +1106,8 @@ jobs:
           export PASS_RATE="${SUITE_PASS_RATE:-0}"
           export DURATION="${TEST_DURATION:-N/A}"
           export DEVICE="${DEVICE}"
-          export BRANCH="${{ github.event.inputs.main-branch || 'master' }}"
+          export BRANCH_AUTO="${{ github.event.inputs.main-branch }}"
+          export BRANCH_CODE="${{ github.event.inputs.submodule-branch }}"
 
           python3 - <<'PYEOF'
           import os
@@ -1116,7 +1117,7 @@ jobs:
               tpl = Template(f.read())
 
           keys = ["STATUS_ICON", "DATE_TIME", "REPORT_URL", "GSHEET_URL", "PASSED", "PASS_RATE",
-                  "FAILED", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH", "STATUS_COLOR", "STATUS"]
+                  "FAILED", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH_AUTO", "BRANCH_CODE", "STATUS_COLOR", "STATUS"]
           payload = tpl.safe_substitute({k: os.environ.get(k, "") for k in keys})
 
           with open("payload.json", "w") as f:
