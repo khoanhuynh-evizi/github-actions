@@ -349,7 +349,12 @@ jobs:
   report:
     name: Report & Notify
     needs: [start, plan, build, test]
-    if: always()
+    # Runs whether the tests passed or failed, but not when the run was
+    # cancelled — neither a manual cancel (cancelled()) nor an automatic one,
+    # e.g. a job hitting timeout-minutes (a needed job ending as 'cancelled').
+    # A cancelled run shouldn't export to Sheets, deploy the Allure report or
+    # send the Google Chat notification.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') }}
     runs-on: ${{ github.event.inputs.runner_type || 'macos-latest' }}
     timeout-minutes: 45
     steps:
@@ -399,6 +404,21 @@ jobs:
             DURATION_STR="$(( DURATION / 60 ))m $(( DURATION % 60 ))s"
           fi
           echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
+
+          # Same "HH:MM:SS - HH:MM:SS (40m 25s)" shape as the dashboard
+          # report header, in GMT+7, spanning the whole workflow run. Python
+          # instead of `date -d`, which macOS's BSD date doesn't support.
+          python3 - "$START" "$NOW" >> $GITHUB_ENV <<'PYEOF'
+          import datetime, sys
+          start, end = (int(x) for x in sys.argv[1:3])
+          tz = datetime.timezone(datetime.timedelta(hours=7))
+          fmt = lambda t, f: datetime.datetime.fromtimestamp(t, tz).strftime(f)
+          d = end - start
+          h, m, s = d // 3600, d % 3600 // 60, d % 60
+          dur = f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+          print(f"RUN_DATE={fmt(start, '%m/%d/%Y')}")
+          print(f"RUN_TIME_RANGE={fmt(start, '%H:%M:%S')} - {fmt(end, '%H:%M:%S')} ({dur})")
+          PYEOF
         shell: bash
 
       - name: Download all shard results
@@ -521,10 +541,16 @@ jobs:
           # ── Build test-class → feature map from testRun.json ─────────────────
           with open(TEST_RUN_JSON) as f:
               suite = json.load(f)
+          # Each test case may also carry an "id" (e.g. "ST17") for the
+          # sheet's ID column.
+          ID_KEYS = ("id", "testCaseId", "tcId", "caseId", "ID")
           feature_of = {}
+          id_of = {}
           for feature in suite["testsuite"]:
               for tc in feature.get("testCases", []):
                   feature_of[tc["name"]] = feature["name"]
+                  id_of[tc["name"]] = str(next(
+                      (tc[k] for k in ID_KEYS if tc.get(k)), ""))
 
           # ── Pull failed test-class names out of the merged xcresult ──────────
           # `xcresulttool get test-results tests` (Xcode 16+) returns a nested
@@ -591,7 +617,7 @@ jobs:
           for feat, tcs in feature_map.items():
               print(f"  [{feat}]")
               for tc in tcs:
-                  print(f"    • {tc}")
+                  print(f"    • [{id_of.get(tc) or 'no id'}] {tc}")
 
           # ── Auth ──────────────────────────────────────────────────────────────
           creds   = service_account.Credentials.from_service_account_info(
@@ -614,22 +640,32 @@ jobs:
               idx += 1
 
           # ── Build row data ────────────────────────────────────────────────────
-          # Columns: A=TCs | B=Run | C=Type | D=Status | E=Note | F-Z=empty
+          # Columns: A=ID | B=TCs | C=Run | D=Type | E=Status | F=Note | G-Z=empty
           TOTAL_COLS = 26
-          EMPTY      = [""] * (TOTAL_COLS - 5)
+          EMPTY      = [""] * (TOTAL_COLS - 6)
 
-          header_row          = ["TCs", "Run", "Type", "Status", "Note"] + EMPTY
+          header_row          = ["ID", "TCs", "Run", "Type", "Status", "Note"] + EMPTY
           all_rows            = [header_row]
           feature_row_indices = []
-          tc_row_indices      = []
+          # (start, end) row ranges of each feature's test-case rows — the
+          # checkbox/dropdowns/centering are applied per block so they never
+          # land on the feature header rows in between.
+          tc_blocks           = []
 
           for feat_name, tcs in feature_map.items():
               feature_row_indices.append(len(all_rows))
-              all_rows.append([feat_name] + [""] * (TOTAL_COLS - 1))
+              # Feature name goes in the TCs column; the ID column stays for IDs only
+              all_rows.append(["", feat_name] + [""] * (TOTAL_COLS - 2))
+              block_start = len(all_rows)
               for tc in tcs:
-                  tc_row_indices.append(len(all_rows))
-                  # B=True (boolean) → renders as a checked checkbox after validation applied
-                  all_rows.append([tc, True, "Existing", "Fail", ""] + EMPTY)
+                  # C=True (boolean) → renders as a checked checkbox after validation applied
+                  all_rows.append([id_of.get(tc, ""), tc, True, "Existing", "Fail", ""] + EMPTY)
+              tc_blocks.append((block_start, len(all_rows)))
+
+          missing_ids = sum(1 for tcs in feature_map.values() for tc in tcs if not id_of.get(tc))
+          if missing_ids:
+              print(f"⚠️ {missing_ids} failed test class(es) have no ID in {TEST_RUN_JSON} "
+                    f"(looked for keys {', '.join(ID_KEYS)}) — their ID cell is left empty")
 
           total_rows = len(all_rows)
 
@@ -695,10 +731,8 @@ jobs:
                   }
               })
 
-          if tc_row_indices:
-              first_tc = tc_row_indices[0]
-              last_tc  = tc_row_indices[-1] + 1
-              for col in (1, 2, 3):  # Run, Type, Status
+          for first_tc, last_tc in tc_blocks:
+              for col in (0, 2, 3, 4):  # ID, Run, Type, Status
                   fmt_requests.append({
                       "repeatCell": {
                           "range": cr(first_tc, col, last_tc, col + 1),
@@ -714,46 +748,50 @@ jobs:
           print("✅ Cell formatting applied.")
 
           # ── STEP 2 — data validation (checkbox + dropdowns) ───────────────────
-          if tc_row_indices:
-              val_requests = [
-                  {"setDataValidation": {"range": cr(first_tc, 1, last_tc, 2), "rule": {
-                      "condition": {"type": "BOOLEAN"}, "showCustomUi": True, "strict": True}}},
-                  {"setDataValidation": {"range": cr(first_tc, 2, last_tc, 3), "rule": {
-                      "condition": {"type": "ONE_OF_LIST", "values": [
-                          {"userEnteredValue": "Existing"}, {"userEnteredValue": "New Feature"}]},
-                      "showCustomUi": True, "strict": True}}},
-                  {"setDataValidation": {"range": cr(first_tc, 3, last_tc, 4), "rule": {
-                      "condition": {"type": "ONE_OF_LIST", "values": [
-                          {"userEnteredValue": "Fail"}, {"userEnteredValue": "Pass"}]},
-                      "showCustomUi": True, "strict": True}}},
-              ]
+          if tc_blocks:
+              val_requests = []
+              for first_tc, last_tc in tc_blocks:
+                  val_requests += [
+                      {"setDataValidation": {"range": cr(first_tc, 2, last_tc, 3), "rule": {
+                          "condition": {"type": "BOOLEAN"}, "showCustomUi": True, "strict": True}}},
+                      {"setDataValidation": {"range": cr(first_tc, 3, last_tc, 4), "rule": {
+                          "condition": {"type": "ONE_OF_LIST", "values": [
+                              {"userEnteredValue": "Existing"}, {"userEnteredValue": "New Feature"}]},
+                          "showCustomUi": True, "strict": True}}},
+                      {"setDataValidation": {"range": cr(first_tc, 4, last_tc, 5), "rule": {
+                          "condition": {"type": "ONE_OF_LIST", "values": [
+                              {"userEnteredValue": "Fail"}, {"userEnteredValue": "Pass"}]},
+                          "showCustomUi": True, "strict": True}}},
+                  ]
               sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": val_requests}).execute()
               print("✅ Data validation applied.")
 
           # ── STEP 3 — conditional formatting (chip colors) ─────────────────────
-          if tc_row_indices:
+          if tc_blocks:
+              type_ranges   = [cr(a, 3, b, 4) for a, b in tc_blocks]
+              status_ranges = [cr(a, 4, b, 5) for a, b in tc_blocks]
               cond_requests = [
                   {"addConditionalFormatRule": {"index": 0, "rule": {
-                      "ranges": [cr(first_tc, 2, last_tc, 3)],
+                      "ranges": type_ranges,
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Existing"}]},
                           "format": {"backgroundColor": GRAY_BG, "textFormat": {"bold": True, "foregroundColor": BLACK}},
                       }}}},
                   {"addConditionalFormatRule": {"index": 1, "rule": {
-                      "ranges": [cr(first_tc, 2, last_tc, 3)],
+                      "ranges": type_ranges,
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "New Feature"}]},
                           "format": {"backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957},
                                      "textFormat": {"bold": True, "foregroundColor": BLACK}},
                       }}}},
                   {"addConditionalFormatRule": {"index": 2, "rule": {
-                      "ranges": [cr(first_tc, 3, last_tc, 4)],
+                      "ranges": status_ranges,
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Fail"}]},
                           "format": {"backgroundColor": RED_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
                       }}}},
                   {"addConditionalFormatRule": {"index": 3, "rule": {
-                      "ranges": [cr(first_tc, 3, last_tc, 4)],
+                      "ranges": status_ranges,
                       "booleanRule": {
                           "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Pass"}]},
                           "format": {"backgroundColor": GREEN_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
@@ -771,10 +809,10 @@ jobs:
           ).execute()
           print("✅ Data written.")
 
-          # ── STEP 5 — auto-resize A-E + freeze header row ──────────────────────
+          # ── STEP 5 — auto-resize A-F + freeze header row ──────────────────────
           sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": [
               {"autoResizeDimensions": {"dimensions": {
-                  "sheetId": new_sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 5}}},
+                  "sheetId": new_sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 6}}},
               {"updateSheetProperties": {
                   "properties": {"sheetId": new_sheet_id, "gridProperties": {"frozenRowCount": 1}},
                   "fields": "gridProperties.frozenRowCount"}},
@@ -873,6 +911,43 @@ jobs:
             || npx --yes allure generate TestResult.xcresult
           echo "---- generated report tree ----"
           find allure-report -maxdepth 2 -name index.html || true
+
+          # Allure renders the header subtitle (data-testid="report-data") as
+          # "October 14, 2026 at 4:51:12 PM (32m 35s)" from the test results,
+          # in the viewer's locale, with no option to change it. Swap it for
+          # the dashboard-style "10/14/2026 · 16:21:10 - 16:59:50 (38m 40s)"
+          # whole-workflow range (GMT+7) once the page has rendered it.
+          if [ -n "${RUN_DATE:-}" ] && [ -n "${RUN_TIME_RANGE:-}" ]; then
+            python3 - <<'PYEOF'
+          import glob
+          import json
+          import os
+
+          subtitle = f'{os.environ["RUN_DATE"]} · {os.environ["RUN_TIME_RANGE"]}'
+          script = """<script>
+          (function () {
+            var text = %s;
+            function fix() {
+              document.querySelectorAll('[data-testid="report-data"]').forEach(function (el) {
+                if (el.textContent !== text) el.textContent = text;
+              });
+            }
+            new MutationObserver(fix).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+            fix();
+          })();
+          </script>
+          """ % json.dumps(subtitle)
+
+          for path in glob.glob("allure-report/**/index.html", recursive=True):
+              with open(path, encoding="utf-8") as f:
+                  html = f.read()
+              if "</body>" not in html:
+                  continue
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(html.replace("</body>", script + "</body>", 1))
+              print(f"Set report subtitle in {path}: {subtitle}")
+          PYEOF
+          fi
         shell: bash
 
       - name: Save Allure history for next run
