@@ -323,10 +323,12 @@ jobs:
   report:
     name: Report & Notify
     needs: [start, test]
-    # Runs whether the tests passed or failed, but not when the workflow was
-    # cancelled — a manual cancel shouldn't export to Sheets, deploy the
-    # Allure report or send the Google Chat notification.
-    if: ${{ !cancelled() }}
+    # Runs whether the tests passed or failed, but not when the run was
+    # cancelled — neither a manual cancel (cancelled()) nor an automatic one,
+    # e.g. a job hitting timeout-minutes (a needed job ending as 'cancelled').
+    # A cancelled run shouldn't export to Sheets, deploy the Allure report or
+    # send the Google Chat notification.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
