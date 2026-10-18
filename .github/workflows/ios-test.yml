@@ -94,6 +94,7 @@ jobs:
             record360UITests/Resources
             record360UITests/Specs
             ci_scripts/plan_shards.py
+            ci_scripts/test_durations.json
           sparse-checkout-cone-mode: false
 
       # Single source of truth for the simulator name/OS version default, so
@@ -354,6 +355,31 @@ jobs:
           fi
           ./ci_scripts/run-tests-prebuilt.sh "${args[@]}"
         shell: bash
+
+      # The app sometimes dies mid-test on CI ("application is not running") and the xcresult has no
+      # crash report (the test plan collects no diagnostics). Simulator crash/jetsam reports land on
+      # the host and in the device's data folder: keep them so the cause can be read afterwards.
+      - name: Collect simulator crash reports
+        if: always()
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          mkdir -p crash-reports
+          find ~/Library/Logs/DiagnosticReports -maxdepth 2 -type f -iname "*record360*" -exec cp {} crash-reports/ \; 2>/dev/null || true
+          if [ -n "$SIMULATOR_UDID" ]; then
+            find ~/Library/Developer/CoreSimulator/Devices/"$SIMULATOR_UDID"/data/Library/Logs -type f \( -iname "*.ips" -o -iname "*.crash" \) -exec cp {} crash-reports/ \; 2>/dev/null || true
+          fi
+          ls -la crash-reports
+        shell: bash
+
+      - name: Upload simulator crash reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-reports-shard-${{ matrix.shard.index }}
+          path: crash-reports
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Package result bundle for upload
         if: always()
