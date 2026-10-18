@@ -38,9 +38,9 @@ on:
         default: '4'
         type: string
       test_iterations:
-        description: 'Max runs per failing test (1 = no retry)'
+        description: 'Max runs per failing test (1 = no retry; rerun failures with list_tests instead)'
         required: false
-        default: '2'
+        default: '1'
         type: string
       timeout_multiplier:
         description: 'Scale UI test kTimeout/kIntervalTimeout on the slower CI simulator'
@@ -341,7 +341,7 @@ jobs:
         env:
           SHARD_TESTS: ${{ matrix.shard.tests }}
           SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
-          TEST_ITERATIONS: ${{ inputs.test_iterations || '2' }}
+          TEST_ITERATIONS: ${{ inputs.test_iterations || '1' }}
           TIMEOUT_MULTIPLIER: ${{ inputs.timeout_multiplier || '2' }}
         run: |
           chmod +x ./ci_scripts/run-tests-prebuilt.sh
