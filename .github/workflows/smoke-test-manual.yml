@@ -13,10 +13,16 @@ on:
         description: 'Branch Dashboard'
         required: false
         default: ''
-      dashboardUrl:
-        description: 'Dashboard URL (Optional)'
-        required: false
-        default: ''
+      environment:
+        description: 'Environment'
+        required: true
+        type: choice
+        default: 'Gamma'
+        options:
+          - 'Gamma'
+          - 'Alpha'
+          - 'Epsilon'
+          - 'Zeta'
       tickets:
         description: 'Notes (Optional)'
         required: false
@@ -68,12 +74,32 @@ jobs:
       matrix: ${{ steps.set.outputs.matrix }}
       max_parallel: ${{ steps.set.outputs.max_parallel }}
       capabilities: ${{ steps.set.outputs.capabilities }}
+      dashboard_url: ${{ steps.set.outputs.dashboard_url }}
+      api_url: ${{ steps.set.outputs.api_url }}
+      graphql_endpoint: ${{ steps.set.outputs.graphql_endpoint }}
     steps:
       - name: Resolve suites & parallelism from run mode
         id: set
         run: |
           RUN_MODE="${{ github.event.inputs.runMode }}"
           BROWSER="${{ github.event.inputs.browser }}"
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+
+          # Empty when no environment is selected (e.g. scheduled runs) so the
+          # test step falls back to the repository secrets.
+          case "$ENVIRONMENT" in
+            Gamma|Alpha|Epsilon|Zeta)
+              ENV_PREFIX=$(echo "$ENVIRONMENT" | tr '[:upper:]' '[:lower:]')
+              DASHBOARD_URL="https://${ENV_PREFIX}-dashboard-s.record360.com/"
+              API_URL="https://${ENV_PREFIX}-s.record360.com/api"
+              GRAPHQL_ENDPOINT="https://${ENV_PREFIX}-s.record360.com/v2"
+              ;;
+            *)
+              DASHBOARD_URL=""
+              API_URL=""
+              GRAPHQL_ENDPOINT=""
+              ;;
+          esac
 
           case "$BROWSER" in
             "Chrome (tablet)") CAPABILITIES=chrome-tablet ;;
@@ -124,10 +150,14 @@ jobs:
           echo "Matrix: $MATRIX"
           echo "Max parallel: $MAX_PARALLEL"
           echo "Browser: $BROWSER -> CAPABILITIES=$CAPABILITIES"
+          echo "Environment: ${ENVIRONMENT:-<secrets>} -> $DASHBOARD_URL | $API_URL | $GRAPHQL_ENDPOINT"
 
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
           echo "max_parallel=$MAX_PARALLEL" >> $GITHUB_OUTPUT
           echo "capabilities=$CAPABILITIES" >> $GITHUB_OUTPUT
+          echo "dashboard_url=$DASHBOARD_URL" >> $GITHUB_OUTPUT
+          echo "api_url=$API_URL" >> $GITHUB_OUTPUT
+          echo "graphql_endpoint=$GRAPHQL_ENDPOINT" >> $GITHUB_OUTPUT
 
   chrome-ubuntu:
     needs: prepare-matrix
@@ -184,7 +214,9 @@ jobs:
       env:
         CAPABILITIES: ${{ needs.prepare-matrix.outputs.capabilities }}
         MAX_INSTANCES: 2
-        R360_DASHBOARD_URL: ${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
+        R360_DASHBOARD_URL: ${{ needs.prepare-matrix.outputs.dashboard_url || secrets.R360_DASHBOARD_URL }}
+        API_URL: ${{ needs.prepare-matrix.outputs.api_url || secrets.API_URL }}
+        GRAPHQL_ENDPOINT: ${{ needs.prepare-matrix.outputs.graphql_endpoint || secrets.GRAPHQL_ENDPOINT }}
 
     # Prefer the version WDIO actually launched (spec reporter prints
     # "Running: chrome (v141.0.7390.54) on linux"); fall back to the
@@ -249,7 +281,7 @@ jobs:
         branch_auto=${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}
         branch_code=${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}
         suite=${{ matrix.suite }}
-        env=${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}
+        env=${{ needs.prepare-matrix.outputs.dashboard_url || secrets.R360_DASHBOARD_URL }}
         tickets=${{ github.event.inputs.tickets || 'N/A' }}
         browser=${{ github.event.inputs.browser }} (${{ needs.prepare-matrix.outputs.capabilities }})
         browser_version=${{ steps.browser_version.outputs.version }}
@@ -941,7 +973,7 @@ jobs:
         fi
         export BRANCH_WDIO="${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}"
         export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}"
-        export ENV_URL="${{ github.event.inputs.dashboardUrl || secrets.R360_DASHBOARD_URL_ }}"
+        export ENV_URL="${{ needs.prepare-matrix.outputs.dashboard_url || secrets.R360_DASHBOARD_URL }}"
         export BROWSER="${{ github.event.inputs.browser }}-v${{ steps.browser_version.outputs.version }}"
 
         TICKETS="${{ github.event.inputs.tickets }}"
