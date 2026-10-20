@@ -215,7 +215,8 @@ jobs:
           if [ -f Podfile ]; then
             install_dependencies() { pod install --repo-update && pod update Record360SDK; }
           else
-            install_dependencies() { xcodebuild -resolvePackageDependencies -project record360.xcodeproj -scheme record360; }
+            # Same DerivedData as ci_scripts/build-for-testing.sh, so the build reuses these checkouts
+            install_dependencies() { xcodebuild -resolvePackageDependencies -project record360.xcodeproj -scheme record360 -derivedDataPath DerivedData; }
           fi
           for attempt in 1 2 3; do
             if install_dependencies; then
