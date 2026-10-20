@@ -205,21 +205,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pods-
 
-      - name: Install CocoaPods dependencies
+      - name: Install dependencies (CocoaPods or Swift packages)
         run: |
           # customers.pspdfkit.com (PSPDFKit's binary CDN) occasionally resets the
           # connection mid-download from GitHub-hosted runners — retry instead of
           # failing the build on a transient blip. This now runs once for the
           # whole matrix instead of once per shard.
+          # Branches migrated to Swift Package Manager (MOB-2597) have no Podfile.
+          if [ -f Podfile ]; then
+            install_dependencies() { pod install --repo-update && pod update Record360SDK; }
+          else
+            install_dependencies() { xcodebuild -resolvePackageDependencies -project record360.xcodeproj -scheme record360; }
+          fi
           for attempt in 1 2 3; do
-            if pod install --repo-update && pod update Record360SDK; then
+            if install_dependencies; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
-              echo "❌ pod install/update failed after $attempt attempts"
+              echo "❌ Installing dependencies failed after $attempt attempts"
               exit 1
             fi
-            echo "⚠️ pod install/update failed (attempt $attempt/3) — retrying in 20s..."
+            echo "⚠️ Installing dependencies failed (attempt $attempt/3) — retrying in 20s..."
             sleep 20
           done
         shell: bash
@@ -337,6 +343,21 @@ jobs:
           bundle install
           bundle exec xcpretty --version
 
+      # The xcresult has no app log, so an upload that never reaches the server (or a crash with no
+      # report) leaves nothing to go on. Stream the app's own messages ("Inspection completed",
+      # "... uploaded successfully", PSPDFKit, Firebase), not the system's, for the whole shard. The
+      # simulator's log store drops them under XCTest's log volume, so `log show` afterwards is empty.
+      - name: Start app log capture
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          if [ -n "$SIMULATOR_UDID" ]; then
+            nohup xcrun simctl spawn "$SIMULATOR_UDID" log stream --style compact \
+              --predicate 'process == "record360" AND eventType == "logEvent" AND NOT subsystem BEGINSWITH "com.apple"' \
+              > "$RUNNER_TEMP/app-log.txt" 2>&1 &
+          fi
+        shell: bash
+
       - name: Run shard tests
         env:
           SHARD_TESTS: ${{ matrix.shard.tests }}
@@ -369,6 +390,8 @@ jobs:
           if [ -n "$SIMULATOR_UDID" ]; then
             find ~/Library/Developer/CoreSimulator/Devices/"$SIMULATOR_UDID"/data/Library/Logs -type f \( -iname "*.ips" -o -iname "*.crash" \) -exec cp {} crash-reports/ \; 2>/dev/null || true
           fi
+          pkill -f "log stream --style compact" 2>/dev/null || true
+          [ -s "$RUNNER_TEMP/app-log.txt" ] && cp "$RUNNER_TEMP/app-log.txt" crash-reports/
           ls -la crash-reports
         shell: bash
 
