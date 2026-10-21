@@ -180,7 +180,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-${{ matrix.version }}-${{ matrix.os }}-${{ matrix.target }}-4c-4g
+          key: avd-${{ matrix.version }}-${{ matrix.os }}-${{ matrix.target }}-4c-4g-cam-audio
 
       - name: Create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
@@ -197,7 +197,7 @@ jobs:
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-load
+          emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated -no-snapshot-load
           disable-animations: true
           script: echo "Generated AVD snapshot for caching."
 
@@ -258,7 +258,7 @@ jobs:
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated
           disable-animations: true
           script: |
             adb shell wm size
@@ -280,7 +280,7 @@ jobs:
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated
           disable-animations: true
           script: |
             adb shell wm size
