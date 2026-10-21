@@ -61,6 +61,17 @@ on:
           - 'Chrome (mobile)'
           - 'Firefox'
           - 'Edge'
+      maxInstances:
+        description: 'Max instances'
+        required: true
+        type: choice
+        default: '2'
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -213,7 +224,7 @@ jobs:
         ${{ matrix.runCommand }} 2>&1 | tee ../specs-reporter.log
       env:
         CAPABILITIES: ${{ needs.prepare-matrix.outputs.capabilities }}
-        MAX_INSTANCES: 2
+        MAX_INSTANCES: ${{ github.event.inputs.maxInstances || '2' }}
         R360_DASHBOARD_URL: ${{ needs.prepare-matrix.outputs.dashboard_url || secrets.R360_DASHBOARD_URL }}
         API_URL: ${{ needs.prepare-matrix.outputs.api_url || secrets.API_URL }}
         GRAPHQL_ENDPOINT: ${{ needs.prepare-matrix.outputs.graphql_endpoint || secrets.GRAPHQL_ENDPOINT }}
