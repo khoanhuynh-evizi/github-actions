@@ -40,6 +40,7 @@ on:
           - 'Only Smoke'
           - 'Only Smoke Lite'
           - 'Only Regression'
+          - 'Only (Full) Regression'
           - 'Only Sanity'
           - 'Only Feature'
       browser:
@@ -66,15 +67,22 @@ on:
           - '5'
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.actor }}
   cancel-in-progress: true
 
+# How it runs:
+#   prepare-matrix  → works out the suites for the chosen run mode
+#   chrome-ubuntu   → one job per suite runs the tests; a sharded suite (Full Regression) gets one
+#                     job per shard instead, each on its own runner (wdio --shard=x/N)
+#   report          → one job per suite collects its test jobs' Allure results and spec reporter
+#                     logs, then builds ONE report and does history / S3 / Sheets / Chat as before
 jobs:
 
   prepare-matrix:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set.outputs.matrix }}
+      run_matrix: ${{ steps.set.outputs.run_matrix }}
+      report_matrix: ${{ steps.set.outputs.report_matrix }}
       max_parallel: ${{ steps.set.outputs.max_parallel }}
       capabilities: ${{ steps.set.outputs.capabilities }}
       dashboard_url: ${{ steps.set.outputs.dashboard_url }}
@@ -109,6 +117,9 @@ jobs:
               ;;
           esac
 
+          # Number of parallel jobs (runners) every suite is split into
+          SHARDS=4
+
           case "$BROWSER" in
             "Chrome (tablet)") CAPABILITIES=chrome-tablet ;;
             "Chrome (mobile)") CAPABILITIES=chrome-mobile ;;
@@ -117,57 +128,71 @@ jobs:
             *) CAPABILITIES=chrome ;;
           esac
 
-          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\""}'
-          SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\""}'
-          REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json"}'
-          FEATURE='{"suite":"feature","suiteType":"Feature","suiteLabel":"Feature Test","runCommand":"yarn test:run-config --config ./run-configs/feature.json"}'
-          SANITY='{"suite":"sanity","suiteType":"Sanity","suiteLabel":"Sanity Test","runCommand":"yarn test:run-config --config ./run-configs/sanity.json"}'
+          # "shards" splits a suite into that many test jobs; each one appends --shard=<i>/<shards>
+          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\"","shards":'"$SHARDS"'}'
+          SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\"","shards":'"$SHARDS"'}'
+          REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json","shards":'"$SHARDS"'}'
+          REGRESSION_FULL='{"suite":"regression-full","suiteType":"Regression (Full)","suiteLabel":"Regression (Full) Test","runCommand":"yarn test:local --suite=\"Regression Test\"","shards":'"$SHARDS"'}'
+          FEATURE='{"suite":"feature","suiteType":"Feature","suiteLabel":"Feature Test","runCommand":"yarn test:run-config --config ./run-configs/feature.json","shards":'"$SHARDS"'}'
+          SANITY='{"suite":"sanity","suiteType":"Sanity","suiteLabel":"Sanity Test","runCommand":"yarn test:run-config --config ./run-configs/sanity.json","shards":'"$SHARDS"'}'
+
+          # Every suite is sharded now, so cap concurrency at $SHARDS regardless of how
+          # many suites are selected — a steady pool of runners instead of spiking with
+          # (suites × shards) jobs all at once.
+          MAX_PARALLEL=$SHARDS
 
           case "$RUN_MODE" in
             "Only Smoke")
               MATRIX="[$SMOKE]"
-              MAX_PARALLEL=1
               ;;
             "Only Smoke Lite")
               MATRIX="[$SMOKE_LITE]"
-              MAX_PARALLEL=1
               ;;
             "Only Regression")
               MATRIX="[$REGRESSION]"
-              MAX_PARALLEL=1
+              ;;
+            "Only (Full) Regression")
+              MATRIX="[$REGRESSION_FULL]"
               ;;
             "Only Sanity")
               MATRIX="[$SANITY]"
-              MAX_PARALLEL=1
               ;;
             "Smoke - Regression - Sanity (Queue)")
               MATRIX="[$SMOKE,$REGRESSION,$SANITY]"
-              MAX_PARALLEL=1
               ;;
             "Only Feature")
               MATRIX="[$FEATURE]"
-              MAX_PARALLEL=1
               ;;
             *)
               MATRIX="[$SMOKE,$REGRESSION,$SANITY,$FEATURE]"
-              MAX_PARALLEL=3
               ;;
           esac
 
+          # Test jobs: one per suite, or one per shard for a sharded suite ("shard" is "0" when unsharded)
+          RUN_MATRIX=$(echo "$MATRIX" | jq -c '[.[] | if .shards then (. as $s | range(1; $s.shards + 1) | . as $i | $s + {shard: ($i | tostring), runCommand: "\($s.runCommand) --shard=\($i)/\($s.shards)"}) else . + {shard: "0"} end]')
+          # Report jobs: always one per suite
+          REPORT_MATRIX=$(echo "$MATRIX" | jq -c '[.[] | del(.runCommand)]')
+
           echo "Run mode: $RUN_MODE"
-          echo "Matrix: $MATRIX"
+          echo "Run matrix: $RUN_MATRIX"
+          echo "Report matrix: $REPORT_MATRIX"
           echo "Max parallel: $MAX_PARALLEL"
           echo "Browser: $BROWSER -> CAPABILITIES=$CAPABILITIES"
           echo "Environment: ${ENVIRONMENT:-<secrets>} -> $DASHBOARD_URL | $API_URL | $GRAPHQL_ENDPOINT"
 
-          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "run_matrix=$RUN_MATRIX" >> $GITHUB_OUTPUT
+          echo "report_matrix=$REPORT_MATRIX" >> $GITHUB_OUTPUT
           echo "max_parallel=$MAX_PARALLEL" >> $GITHUB_OUTPUT
           echo "capabilities=$CAPABILITIES" >> $GITHUB_OUTPUT
           echo "dashboard_url=$DASHBOARD_URL" >> $GITHUB_OUTPUT
           echo "api_url=$API_URL" >> $GITHUB_OUTPUT
           echo "graphql_endpoint=$GRAPHQL_ENDPOINT" >> $GITHUB_OUTPUT
 
+  # ───────────────────────────────────────────────────────────────────────────
+  # TEST JOBS — run the tests and upload the raw results + log; nothing else
+  # ───────────────────────────────────────────────────────────────────────────
   chrome-ubuntu:
+    name: test (${{ matrix.suite }}${{ matrix.shard != '0' && format(' {0}/{1}', matrix.shard, matrix.shards) || '' }})
     needs: prepare-matrix
     runs-on: ubuntu-latest
     env:
@@ -176,12 +201,9 @@ jobs:
       fail-fast: false
       max-parallel: ${{ fromJson(needs.prepare-matrix.outputs.max_parallel) }}
       matrix:
-        include: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+        include: ${{ fromJson(needs.prepare-matrix.outputs.run_matrix) }}
 
     steps:
-    - name: Checkout workflow repo
-      uses: actions/checkout@v4
-
     - name: Checkout WDIO repository
       uses: actions/checkout@v4
       with:
@@ -212,19 +234,86 @@ jobs:
       working-directory: wdio
 
     - name: Clean old reports
-      run: rm -rf wdio/reports wdio/allure-report wdio/allure-history specs-reporter.log
+      run: rm -rf wdio/reports wdio/allure-report wdio/allure-history specs-reporter-*.log
 
     - name: Run WebDriverIO Tests
       id: wdio
       run: |
         cd wdio
-        ${{ matrix.runCommand }} 2>&1 | tee ../specs-reporter.log
+        ${{ matrix.runCommand }} 2>&1 | tee ../specs-reporter-${{ matrix.shard }}.log
       env:
         CAPABILITIES: ${{ needs.prepare-matrix.outputs.capabilities }}
         MAX_INSTANCES: ${{ github.event.inputs.maxInstances || '2' }}
         R360_DASHBOARD_URL: ${{ needs.prepare-matrix.outputs.dashboard_url || secrets.R360_DASHBOARD_URL }}
         API_URL: ${{ needs.prepare-matrix.outputs.api_url || secrets.API_URL }}
         GRAPHQL_ENDPOINT: ${{ needs.prepare-matrix.outputs.graphql_endpoint || secrets.GRAPHQL_ENDPOINT }}
+
+    # A shard writes its results to wdio/reports/shard-<n>; uploading that folder's contents keeps
+    # the files flat, so the report job can download every shard of a suite into one folder.
+    # The "__" separators keep "regression" from matching "regression-full" in the report job.
+    - name: Upload Allure raw results (this job)
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: results__${{ matrix.suite }}__${{ matrix.shard }}
+        path: wdio/reports/${{ matrix.shard != '0' && format('shard-{0}', matrix.shard) || '' }}
+        if-no-files-found: warn
+        retention-days: 1
+
+    - name: Upload spec reporter log (this job)
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: logs__${{ matrix.suite }}__${{ matrix.shard }}
+        path: specs-reporter-${{ matrix.shard }}.log
+        if-no-files-found: warn
+        retention-days: 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # REPORT JOBS — one per suite: merge its test jobs' output, then everything
+  # that used to follow the test run (Allure, history, S3, Sheets, Chat)
+  # ───────────────────────────────────────────────────────────────────────────
+  report:
+    name: report (${{ matrix.suite }})
+    needs: [prepare-matrix, chrome-ubuntu]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Ho_Chi_Minh
+    strategy:
+      fail-fast: false
+      # Every report job pushes to the allure-history branch — one at a time avoids push conflicts
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJson(needs.prepare-matrix.outputs.report_matrix) }}
+
+    steps:
+    - name: Checkout workflow repo
+      uses: actions/checkout@v4
+
+    - name: Download Allure raw results of every test job of this suite
+      uses: actions/download-artifact@v4
+      continue-on-error: true
+      with:
+        pattern: results__${{ matrix.suite }}__*
+        merge-multiple: true
+        path: wdio/reports
+
+    - name: Download spec reporter logs of every test job of this suite
+      uses: actions/download-artifact@v4
+      continue-on-error: true
+      with:
+        pattern: logs__${{ matrix.suite }}__*
+        merge-multiple: true
+        path: spec-logs
+
+    # One log per suite, shard after shard (not interleaved), so every step below reads it as before
+    - name: Merge spec reporter logs
+      if: always()
+      run: |
+        LOGS=$(ls spec-logs/specs-reporter-*.log 2>/dev/null | sort -V)
+        if [ -n "$LOGS" ]; then cat $LOGS > specs-reporter.log; else touch specs-reporter.log; fi
+        echo "Merged: ${LOGS:-<none>}"
 
     # Prefer the version WDIO actually launched (spec reporter prints
     # "Running: chrome (v141.0.7390.54) on linux"); fall back to the
@@ -333,12 +422,12 @@ jobs:
           exit 0
         fi
 
-        LINE=$(grep "Spec Files:" "$LOG" | tail -1)
-
-        PASSED=$(echo "$LINE" | grep -oP '\d+(?=\s+passed)' || echo 0)
-        FAILED=$(echo "$LINE" | grep -oP '\d+(?=\s+failed)' || echo 0)
-        SKIPPED=$(echo "$LINE" | grep -oP '\d+(?=\s+skipped)' || echo 0)
-        TOTAL=$(echo "$LINE" | grep -oP '\d+(?=\s+total)' || echo 0)
+        # A sharded suite's log has one "Spec Files:" line per shard — add them up
+        sum() { grep "Spec Files:" "$LOG" | grep -oP "\d+(?=\s+$1)" | awk '{s+=$1} END {print s+0}'; }
+        PASSED=$(sum passed)
+        FAILED=$(sum failed)
+        SKIPPED=$(sum skipped)
+        TOTAL=$(sum total)
 
         # ── Patch the widgets Allure renders on the landing page ───────────
         for F in wdio/allure-report/widgets/summary.json \
@@ -403,7 +492,7 @@ jobs:
       with:
         name: allure-deploy-${{ matrix.suite }}
         path: deploy/
-        retention-days: 1
+        retention-days: 7
 
     # TEMPORARY (testing only): points at release-features-test.yml on the
     # test-allure-report branch, whose test-cross-repo-deploy job runs the
@@ -441,14 +530,16 @@ jobs:
           exit 0
         fi
 
-        LINE=$(grep "Spec Files:" "$LOG" | tail -1)
-
-        PASSED=$(echo "$LINE" | grep -oP '\d+(?=\s+passed)' || echo 0)
-        RETRIES=$(echo "$LINE" | grep -oP '\d+(?=\s+retries)' || echo 0)
-        FAILED=$(echo "$LINE" | grep -oP '\d+(?=\s+failed)' || echo 0)
-        SKIPPED=$(echo "$LINE" | grep -oP '\d+(?=\s+skipped)' || echo 0)
-        TOTAL=$(echo "$LINE" | grep -oP '\d+(?=\s+total)' || echo 0)
-        DURATION=$(echo "$LINE" | grep -oP '\d{2}:\d{2}:\d{2}' || echo "00:00:00")
+        # A sharded suite's log has one "Spec Files:" line per shard — add them up
+        sum() { grep "Spec Files:" "$LOG" | grep -oP "\d+(?=\s+$1)" | awk '{s+=$1} END {print s+0}'; }
+        PASSED=$(sum passed)
+        RETRIES=$(sum retries)
+        FAILED=$(sum failed)
+        SKIPPED=$(sum skipped)
+        TOTAL=$(sum total)
+        # Shards run at the same time, so the suite took as long as its slowest shard
+        DURATION=$(grep "Spec Files:" "$LOG" | grep -oP '\d{2}:\d{2}:\d{2}' | sort | tail -1)
+        DURATION=${DURATION:-00:00:00}
 
         DENOM=$(( TOTAL - SKIPPED ))
         PASS_RATE=$(( DENOM > 0 ? PASSED * 100 / DENOM : 0 ))
@@ -991,6 +1082,3 @@ jobs:
         curl -X POST "https://chat.googleapis.com/v1/spaces/AAQAxcsMc74/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=jLqxbYzy2DEH59cMJ7augnU2hj2SEis3hsSjAUY7xIY" \
           -H "Content-Type: application/json" \
           -d @payload.json
-
-
-
