@@ -47,6 +47,18 @@ on:
         required: false
         default: '2'
         type: string
+      code-branch:
+        description: 'Code branch shown as "Branch code" on the Google Chat report card only — not checked out (optional)'
+        required: false
+        type: string
+      note:
+        description: 'Note shown on the Google Chat report card (optional)'
+        required: false
+        type: string
+      build-version:
+        description: 'App build version under test, shown in the Allure report (e.g., 4.30.1 (1234))'
+        required: false
+        type: string
 
 concurrency:
   # One group for every iOS UI test run, whatever branch it tests: all runs log in
@@ -475,6 +487,11 @@ jobs:
           echo "IOS_VERSION=${{ needs.plan.outputs.ios_version }}" >> $GITHUB_ENV
           echo "XCODE_VERSION=$(xcodebuild -version | head -1 | awk '{print $2}')" >> $GITHUB_ENV
           echo "MACOS_VERSION=$(sw_vers -productVersion)" >> $GITHUB_ENV
+          # Free text from the run form — passed via env, not inlined, so it
+          # can't inject shell; newlines dropped so it stays one env line.
+          echo "BUILD_VERSION=$(tr -d '\r\n' <<< "$BUILD_VERSION_INPUT")" >> $GITHUB_ENV
+        env:
+          BUILD_VERSION_INPUT: ${{ inputs.build-version }}
         shell: bash
 
       - name: Compute test duration
@@ -964,6 +981,8 @@ jobs:
               "Xcode Version": v("XCODE_VERSION"),
               "macOS Version": v("MACOS_VERSION"),
               "Test Bundle": v("TEST_BUNDLE"),
+              // Only when a build version was entered for the run
+              ...(v("BUILD_VERSION") ? { "Build Version": v("BUILD_VERSION") } : {}),
             },
             categories: {
               rules: [
@@ -1139,7 +1158,7 @@ jobs:
           fi
 
           export STATUS STATUS_COLOR STATUS_ICON
-          export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
+          export DATE_TIME="$(TZ=Asia/Ho_Chi_Minh date '+%d/%m/%Y %H:%M:%S')"
           export REPORT_URL="https://360-staging-allure-report.s3.amazonaws.com/ios/index.html"
           # Deep-link to the sheet tab this run actually created (if any) —
           # a bare spreadsheet URL opens whatever sheet was last active for
@@ -1156,10 +1175,12 @@ jobs:
           export PASS_RATE="${SUITE_PASS_RATE:-0}"
           export DURATION="${TEST_DURATION:-N/A}"
           export DEVICE="${SIMULATOR_NAME} · iOS ${IOS_VERSION}"
-          export BRANCH="${{ github.event.inputs.testing-branch || secrets.DEFAULT_BRANCH_IOS }}"
+          export BRANCH_AUTO="${{ github.event.inputs.testing-branch || secrets.DEFAULT_BRANCH_IOS }}"
 
           # macOS runners don't ship envsubst (gettext) by default, so substitute with python3 instead.
           python3 - <<'PYEOF'
+          import html
+          import json
           import os
           from string import Template
 
@@ -1167,8 +1188,18 @@ jobs:
               tpl = Template(f.read())
 
           keys = ["STATUS_ICON", "DATE_TIME", "REPORT_URL", "GSHEET_URL", "PASSED", "PASS_RATE",
-                  "FAILED", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH", "STATUS_COLOR", "STATUS"]
-          payload = tpl.safe_substitute({k: os.environ.get(k, "") for k in keys})
+                  "FAILED", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH_AUTO", "STATUS_COLOR", "STATUS"]
+          values = {k: os.environ.get(k, "") for k in keys}
+          # Free text typed into the run form — escape it for the card's HTML
+          # and for the JSON string it's substituted into, so quotes, <, & or
+          # newlines can't break the payload.
+          note = os.environ.get("NOTE", "").strip() or "-"
+          values["NOTE"] = json.dumps(html.escape(note).replace("\n", "<br>"))[1:-1]
+          # Report-only input (nothing checks it out) — same escaping as the note
+          code_branch = os.environ.get("BRANCH_CODE", "").strip() or "-"
+          values["BRANCH_CODE"] = json.dumps(html.escape(code_branch))[1:-1]
+          payload = tpl.safe_substitute(values)
+          json.loads(payload)  # fail here, not at the webhook, if it's malformed
 
           with open("payload.json", "w") as f:
               f.write(payload)
@@ -1177,6 +1208,9 @@ jobs:
           curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
             -H "Content-Type: application/json" \
             -d @payload.json
+        env:
+          NOTE: ${{ inputs.note }}
+          BRANCH_CODE: ${{ inputs.code-branch }}
         shell: bash
 
       # Same directory-flattening quirk as the shard uploads (see "Package
