@@ -36,6 +36,11 @@ on:
         required: false
         default: 'master'
 
+concurrency:
+  # Same group as ios-test.yml: runs share the staging accounts and units, so they must not overlap
+  group: ios-ui-test-staging
+  cancel-in-progress: false
+
 env:
   PATH_TEST_SUITE: record360UITests/Resources/testRun.json
 

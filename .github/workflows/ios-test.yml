@@ -49,11 +49,11 @@ on:
         type: string
 
 concurrency:
-  # Keyed on the branch under test (not github.ref, which for
-  # workflow_dispatch is always the ref the workflow file itself lives on)
-  # so two runs against the SAME ios-app branch don't pile up 4+ shard jobs
-  # each, but runs against different branches don't block each other.
-  group: ios-ui-test-${{ github.event.inputs.testing-branch || 'default' }}
+  # One group for every iOS UI test run, whatever branch it tests: all runs log in
+  # with the same staging accounts and reuse the same units, so two overlapping runs
+  # close each other's transactions (a second run waits for the first instead).
+  # Shared with ios-test-daily.yml.
+  group: ios-ui-test-staging
   cancel-in-progress: false
 
 env:
