@@ -22,12 +22,12 @@ on:
         type: string
       main-branch:
         description: 'main branch(e.g., master)'
-        required: false
+        required: true
         type: string
         default: 'master'
       submodule-branch:
         description: 'submodule branch(e.g., master)'
-        required: false
+        required: true
         type: string
       device-profile:
         description: 'Android device profile to use (e.g., pixel_7, pixel_6, Nexus 5X, pixel_tablet)'
@@ -44,6 +44,19 @@ on:
         required: false
         type: string
         default: 'google_apis'
+      test-retries:
+        description: 'How many times failed tests are rerun (0 disables retries)'
+        required: false
+        type: string
+        default: '2'
+      note:
+        description: 'Note shown on the Google Chat report card (optional)'
+        required: false
+        type: string
+      build-version:
+        description: 'App build version under test, shown in the Allure report (e.g., 4.30.1 (1234))'
+        required: false
+        type: string
 env:
   PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
 
@@ -53,10 +66,26 @@ permissions:
   checks: write
 
 jobs:
+  # -------------------- TIMER --------------------
+  start:
+    name: Start timer
+    runs-on: ubuntu-latest
+    outputs:
+      start_time: ${{ steps.t.outputs.start_time }}
+    steps:
+      - id: t
+        run: echo "start_time=$(date +%s)" >> "$GITHUB_OUTPUT"
+
   test:
     runs-on: ${{ inputs.os-version || 'ubuntu-latest' }}
     strategy:
+      # One shard failing must not cancel the others still running.
+      fail-fast: false
       matrix:
+        # The full suite takes ~4h on one emulator, long enough for the runner
+        # to die mid-run — split it into shards that each run on their own
+        # runner. A custom instrument_options subset runs unsharded.
+        shard: ${{ fromJSON(inputs.instrument_options == '' && '[0, 1, 2, 3]' || '[0]') }}
         include:
           - os: ${{ inputs.os-version || 'ubuntu-latest' }}
             version: ${{ inputs.sdk-version || '35' }}
@@ -64,6 +93,17 @@ jobs:
             target: ${{ inputs.device-target || 'google_apis' }}
             profile: ${{ inputs.device-profile || 'pixel_7' }}
     steps:
+      - name: Clean up workspace
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -74,8 +114,15 @@ jobs:
 
       - name: Checkout submodules at master branch
         if: ${{ github.event.inputs.submodule-branch != '' }}
+        env:
+          SUBMODULE_BRANCH: ${{ github.event.inputs.submodule-branch }}
         run: |
-          git submodule foreach git checkout ${{ github.event.inputs.submodule-branch }}
+          # actions/checkout with submodules: true only fetches the commit
+          # pinned by the superproject, not other branches — a plain
+          # `git checkout <branch>` inside the submodule has no local ref to
+          # resolve, hence "pathspec did not match any file(s)". Fetch the
+          # branch's tip first and check it out from FETCH_HEAD directly.
+          git submodule foreach "git fetch --depth 1 origin $SUBMODULE_BRANCH && git checkout -B $SUBMODULE_BRANCH FETCH_HEAD"
 
       - name: Download Test data from firebase
         if: "${{ inputs.useUrlTestData == true }}"
@@ -91,14 +138,19 @@ jobs:
           DATA: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: echo $DATA | base64 --decode > app/google-services.json
 
+      
+      - name: Checkout GraphQL Schema File
+        uses: actions/checkout@v4
+        with:
+          path: .workflow-repo
+          sparse-checkout: |
+            .github/schemas/record360-schema.json
+          sparse-checkout-cone-mode: false
+
       - name: Load GraphQL Schema File
-        env:
-          DATA1: ${{ secrets.GRAPHQL_SCHEMA_JSON_1 }}
-          DATA2: ${{ secrets.GRAPHQL_SCHEMA_JSON_2 }}
         run: |
           mkdir -p Submodule/sdk/src/main/assets/graphql/record360
-          echo "${DATA1}${DATA2}" | base64 --decode | gunzip > Submodule/sdk/src/main/assets/graphql/record360/schema.json
-
+          cp .workflow-repo/.github/schemas/record360-schema.json Submodule/sdk/src/main/assets/graphql/record360/schema.json
 
       - name: Load Gradle Properties File
         env:
@@ -112,7 +164,9 @@ jobs:
       - name: Set Up JDK Environment
         uses: actions/setup-java@v4
         with:
-          distribution: 'jetbrains'
+          # Temurin is preinstalled in the runner tool cache. The jetbrains distribution resolves versions through
+          # the GitHub API unauthenticated and hits the shared runner IP rate limit.
+          distribution: 'temurin'
           java-version: '21'
 
       - name: Setup Gradle
@@ -141,7 +195,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-${{ matrix.version }}-${{ matrix.os }}-${{ matrix.target }}
+          key: avd-${{ matrix.version }}-${{ matrix.os }}-${{ matrix.target }}-4c-4g-cam2-audio
 
       - name: Create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
@@ -152,18 +206,215 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
-          cores: 2
+          cores: 4
           sdcard-path-or-size: 1024M
-          ram-size: 2048M
+          ram-size: 4096M
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-load
+          emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated -camera-front emulated -no-snapshot-load
           disable-animations: true
           script: echo "Generated AVD snapshot for caching."
 
+      # Logs host RAM/swap/disk every 2 minutes during the test run, to
+      # diagnose the runner dying ~2h in with no error in the test output.
+      - name: Create resource monitor script
+        run: |
+          cat > "$RUNNER_TEMP/monitor.sh" <<'EOF'
+          #!/usr/bin/env bash
+          while true; do
+            echo "[monitor] $(date +%T) $(free -m | awk '/Mem/{print "mem_used="$3"MB avail="$7"MB"}') $(free -m | awk '/Swap/{print "swap_used="$3"MB"}') $(df -h / | awk 'NR==2{print "disk_used="$5" free="$4}')"
+            sleep 120
+          done
+          EOF
+          chmod +x "$RUNNER_TEMP/monitor.sh"
+
+      # Shared by the sharded full run and the custom instrument_options run: failed tests are rerun
+      # (ANDROID_TEST_RETRIES times) and folded into the first run's JUnit XML before it is uploaded.
+      - name: Create test run scripts
+        run: |
+          cat > "$RUNNER_TEMP/merge_retry.py" <<'PYEOF'
+          #!/usr/bin/env python3
+          """Retry helper for connectedAndroidTest JUnit XML.
+
+          failed <dir> <package>          print failed tests of the run in <dir> as comma separated class#method
+          merge  <final_dir> <retry_dir> <attempt>
+                                           fold a rerun into the full first-run report: a test that passed on the rerun
+                                           loses its failure (and keeps a note), a test that failed again keeps the latest
+                                           failure. Rerun logcat files are copied next to the originals with a -retryN suffix.
+          """
+          import glob
+          import os
+          import shutil
+          import sys
+          import xml.etree.ElementTree as ET
+
+
+          def junit_files(directory):
+              return sorted(glob.glob(os.path.join(directory, "**", "TEST-*.xml"), recursive=True))
+
+
+          def testcases(path):
+              root = ET.parse(path).getroot()
+              suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+              for suite in suites:
+                  for tc in suite.findall("testcase"):
+                      yield suite, tc
+
+
+          def is_failed(tc):
+              return tc.find("failure") is not None or tc.find("error") is not None
+
+
+          def cmd_failed(directory, package):
+              names = []
+              for path in junit_files(directory):
+                  for _, tc in testcases(path):
+                      if is_failed(tc):
+                          classname = tc.get("classname", "")
+                          prefix = package + "."
+                          short = classname[len(prefix):] if classname.startswith(prefix) else classname
+                          names.append(f"{short}#{tc.get('name')}")
+              print(",".join(dict.fromkeys(names)))
+
+
+          def cmd_merge(final_dir, retry_dir, attempt):
+              retried = {}
+              for path in junit_files(retry_dir):
+                  for _, tc in testcases(path):
+                      retried[(tc.get("classname"), tc.get("name"))] = tc
+
+              for path in junit_files(final_dir):
+                  tree = ET.parse(path)
+                  root = tree.getroot()
+                  suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+                  for suite in suites:
+                      for tc in suite.findall("testcase"):
+                          rerun = retried.get((tc.get("classname"), tc.get("name")))
+                          if rerun is None or not is_failed(tc):
+                              continue
+                          for node in tc.findall("failure") + tc.findall("error"):
+                              tc.remove(node)
+                          if is_failed(rerun):
+                              for node in rerun.findall("failure") + rerun.findall("error"):
+                                  tc.append(node)
+                              note = f"Failed again on retry {attempt}"
+                          else:
+                              note = f"Passed on retry {attempt} after failing the first run"
+                              tc.set("time", rerun.get("time", tc.get("time", "0")))
+                          out = tc.find("system-out")
+                          if out is None:
+                              out = ET.SubElement(tc, "system-out")
+                          out.text = ((out.text or "") + "\n" + note).strip()
+                      failures = sum(1 for tc in suite.findall("testcase") if tc.find("failure") is not None)
+                      errors = sum(1 for tc in suite.findall("testcase") if tc.find("error") is not None)
+                      suite.set("failures", str(failures))
+                      suite.set("errors", str(errors))
+                  tree.write(path, encoding="UTF-8", xml_declaration=True)
+
+              # Keep the rerun logcats next to the first-run ones
+              for src in glob.glob(os.path.join(retry_dir, "**", "logcat-*.txt"), recursive=True):
+                  rel = os.path.relpath(src, retry_dir)
+                  dst = os.path.join(final_dir, os.path.splitext(rel)[0] + f"-retry{attempt}.txt")
+                  os.makedirs(os.path.dirname(dst), exist_ok=True)
+                  shutil.copyfile(src, dst)
+
+
+          if __name__ == "__main__":
+              if sys.argv[1] == "failed":
+                  cmd_failed(sys.argv[2], sys.argv[3])
+              elif sys.argv[1] == "merge":
+                  cmd_merge(sys.argv[2], sys.argv[3], sys.argv[4])
+              else:
+                  sys.exit(f"unknown command {sys.argv[1]}")
+          PYEOF
+
+          cat > "$RUNNER_TEMP/run-with-retry.sh" <<'EOF'
+          #!/usr/bin/env bash
+          # usage: run-with-retry.sh <package> <tests>
+          # <tests> are class or class#method names relative to <package>, separated by commas or spaces.
+          # Runs the tests, then reruns only the failed ones up to ANDROID_TEST_RETRIES times and folds the reruns into the
+          # first run's JUnit XML, so the upload / report steps keep reading app/build/outputs/*/connected as before.
+          set -o pipefail
+          package="$1"
+          tests=$(tr ', ' '\n\n' <<< "$2" | grep -v '^$' | sed "s/^/$package./" | paste -sd, -)
+          retries="${ANDROID_TEST_RETRIES:-2}"
+          results="app/build/outputs/androidTest-results/connected"
+          final="$RUNNER_TEMP/connected-final"
+          merge="$RUNNER_TEMP/merge_retry.py"
+
+          run_tests() {
+            rm -rf "$results"
+            ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$1" --continue --stacktrace
+          }
+
+          if [[ -z "$tests" ]]; then
+            echo "No tests to run."
+            exit 0
+          fi
+
+          run_tests "$tests"; rc=$?
+          if [[ $rc -eq 0 || "$retries" -le 0 ]]; then exit $rc; fi
+          if [[ -z "$(find "$results" -name 'TEST-*.xml' 2>/dev/null)" ]]; then
+            echo "No JUnit report was produced, not retrying."
+            exit $rc
+          fi
+
+          rm -rf "$final"; cp -r "$results" "$final"
+          if [[ -z "$(python3 "$merge" failed "$final" "$package")" ]]; then
+            # Gradle failed without a failed test in the report (build error, instrumentation crash): don't hide it
+            echo "Run failed without a failed test in the report, not retrying."
+            exit $rc
+          fi
+
+          for attempt in $(seq 1 "$retries"); do
+            failed=$(python3 "$merge" failed "$final" "$package")
+            [[ -z "$failed" ]] && break
+            echo "Retry $attempt of $retries for:"; tr ',' '\n' <<< "$failed"
+            run_tests "$(tr ',' '\n' <<< "$failed" | sed "s/^/$package./" | paste -sd, -)"
+            if [[ -z "$(find "$results" -name 'TEST-*.xml' 2>/dev/null)" ]]; then
+              echo "Retry $attempt produced no JUnit report."
+              continue
+            fi
+            python3 "$merge" merge "$final" "$results" "$attempt"
+          done
+
+          rm -rf "$results"; mkdir -p "$(dirname "$results")"; cp -r "$final" "$results"
+          remaining=$(python3 "$merge" failed "$final" "$package")
+          if [[ -n "$remaining" ]]; then
+            echo "Still failing after $retries retries:"; tr ',' '\n' <<< "$remaining"
+            exit 1
+          fi
+          echo "All tests passed after retries."
+          EOF
+          chmod +x "$RUNNER_TEMP/run-with-retry.sh"
+
+          cat > "$RUNNER_TEMP/run-shard.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -eo pipefail
+          package="$1"; suite="$2"; num_shards="$3"; shard_index="$4"
+
+          tests=$(jq -r '.testsuite[] | select(.enabled == true) | .testCases[] | select(.enabled == true) | .name' "$suite" \
+            | tr ', ' '\n\n' | grep -v '^$' \
+            | awk -v n="$num_shards" -v i="$shard_index" \
+                '(NR - 1) % n == i { printf "%s%s", (c++ ? "," : ""), $0 }')
+
+          if [[ -z "$tests" ]]; then
+            echo "No enabled tests assigned to shard $shard_index of $num_shards — nothing to run."
+            exit 0
+          fi
+
+          echo "Shard $shard_index of $num_shards runs $(tr ',' '\n' <<< "$tests" | wc -l) test(s):"
+          tr ',' '\n' <<< "$tests"
+
+          exec "$RUNNER_TEMP/run-with-retry.sh" "$package" "$tests"
+          EOF
+          chmod +x "$RUNNER_TEMP/run-shard.sh"
+
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
+        env:
+          ANDROID_TEST_RETRIES: ${{ inputs.test-retries || '2' }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.version }}
@@ -171,22 +422,23 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
-          cores: 2
+          cores: 4
           sdcard-path-or-size: 1024MB
-          ram-size: 2048M
+          ram-size: 4096M
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated -camera-front emulated
           disable-animations: true
           script: |
             adb shell wm size
             adb shell wm density
-            chmod +x ./scripts/run-testsuite.sh
-            ./scripts/run-testsuite.sh --package=com.record360.app.test.tests --path="$PATH_TEST_SUITE"
+            "$RUNNER_TEMP/monitor.sh" & MON_PID=$!; "$RUNNER_TEMP/run-shard.sh" com.record360.app.test.tests "$PATH_TEST_SUITE" ${{ strategy.job-total }} ${{ matrix.shard }}; RC=$?; kill $MON_PID; exit $RC
 
       - name: Execute custom instrument test ${{ inputs.instrument_options }} on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options != '' }}"
+        env:
+          ANDROID_TEST_RETRIES: ${{ inputs.test-retries || '2' }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.version }}
@@ -194,25 +446,31 @@ jobs:
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
           avd-name: Nexus6_${{ matrix.version }}
-          cores: 2
+          cores: 4
           sdcard-path-or-size: 2000M
-          ram-size: 2048M
+          ram-size: 4096M
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated -camera-front emulated
           disable-animations: true
           script: |
             adb shell wm size
             adb shell wm density
-            chmod +x ./scripts/run-tests.sh
-            ./scripts/run-tests.sh --instrument-options=${{ inputs.instrument_options }}
+            "$RUNNER_TEMP/run-with-retry.sh" com.record360.app.test.tests "${{ inputs.instrument_options }}"
+
+      - name: Diagnose runner resources
+        if: failure()
+        run: |
+          free -m
+          df -h /
+          sudo dmesg -T | grep -i -E "out of memory|killed process|oom" || echo "No OOM kills found in dmesg"
 
       - name: Upload reports on API ${{ matrix.version }}
         if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-suite-${{ matrix.version }}
+          name: test-suite-${{ matrix.version }}-shard-${{ matrix.shard }}
           path: |
             app/build/outputs/*/connected/*
             app/build/reports/androidTests/connected/**
@@ -221,8 +479,852 @@ jobs:
         uses: dorny/test-reporter@v1
         if: success() || failure()
         with:
-          name: Report Testsuite on API ${{ matrix.version }}
+          name: Report Testsuite on API ${{ matrix.version }} (shard ${{ matrix.shard }})
           path: app/build/outputs/*/connected/**/flavors/**/*.xml
           reporter: java-junit
           fail-on-empty: 'false'
           fail-on-error: 'false'
+
+  # -------------------- REPORT & NOTIFY --------------------
+  # Runs on ubuntu (unlike ios-test.yml's macOS-only report job) — nothing
+  # here needs Xcode/xcresulttool. Android has no Allure adapter wired into
+  # the instrumentation run, so this converts the JUnit XML the `test` job
+  # already produces into Allure's result-file format instead of consuming
+  # a native allure-results directory.
+  report:
+    name: Report & Notify
+    needs: [start, test]
+    # Runs whether the tests passed or failed, but not when the run was
+    # cancelled — neither a manual cancel (cancelled()) nor an automatic one,
+    # e.g. a job hitting timeout-minutes (a needed job ending as 'cancelled').
+    # A cancelled run shouldn't export to Sheets, deploy the Allure report or
+    # send the Google Chat notification.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout testRun.json
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+          repository: ${{ secrets.WDIO_ANDROID_REPOS }}
+          ref: ${{ github.event.inputs.main-branch || 'master' }}
+          sparse-checkout: |
+            ${{ env.PATH_TEST_SUITE }}
+          sparse-checkout-cone-mode: false
+
+      # Only needed for the Google Chat card template below. Sparse to just
+      # the template dir so it can't collide with the android-app checkout
+      # above or pull in the rest of this workflow repo.
+      - name: Checkout workflow repo (for Google Chat template)
+        uses: actions/checkout@v4
+        with:
+          path: .workflow-repo
+          sparse-checkout: |
+            .github/googleChat
+          sparse-checkout-cone-mode: false
+
+      - name: Set report metadata
+        if: always()
+        run: |
+          echo "SDK_VERSION=${{ inputs.sdk-version || '35' }}" >> $GITHUB_ENV
+          echo "DEVICE_PROFILE=${{ inputs.device-profile || 'pixel_7' }}" >> $GITHUB_ENV
+          echo "DEVICE_ARCH=${{ inputs.device-arch || 'x86_64' }}" >> $GITHUB_ENV
+          echo "DEVICE_TARGET=${{ inputs.device-target || 'google_apis' }}" >> $GITHUB_ENV
+          echo "DEVICE=${{ inputs.device-profile || 'pixel_7' }} · API ${{ inputs.sdk-version || '35' }} (${{ inputs.device-arch || 'x86_64' }}/${{ inputs.device-target || 'google_apis' }})" >> $GITHUB_ENV
+          # Free text from the run form — passed via env, not inlined, so it
+          # can't inject shell; newlines dropped so it stays one env line.
+          echo "BUILD_VERSION=$(tr -d '\r\n' <<< "$BUILD_VERSION_INPUT")" >> $GITHUB_ENV
+        env:
+          BUILD_VERSION_INPUT: ${{ inputs.build-version }}
+        shell: bash
+
+      - name: Compute test duration
+        if: always()
+        run: |
+          START=${{ needs.start.outputs.start_time }}
+          NOW=$(date +%s)
+          DURATION=$(( NOW - START ))
+          DURATION_STR="${DURATION}s"
+          if [ "$DURATION" -ge 60 ]; then
+            DURATION_STR="$(( DURATION / 60 ))m $(( DURATION % 60 ))s"
+          fi
+          echo "TEST_DURATION=$DURATION_STR" >> $GITHUB_ENV
+
+          # Same "HH:MM:SS - HH:MM:SS (40m 25s)" shape as the dashboard
+          # report header, in GMT+7, spanning the whole workflow run.
+          H=$(( DURATION / 3600 )); M=$(( DURATION % 3600 / 60 )); S=$(( DURATION % 60 ))
+          if [ "$H" -gt 0 ]; then RANGE_DUR="${H}h ${M}m ${S}s"; else RANGE_DUR="${M}m ${S}s"; fi
+          RUN_START_HMS=$(TZ=Asia/Ho_Chi_Minh date -d "@$START" +%H:%M:%S)
+          RUN_END_HMS=$(TZ=Asia/Ho_Chi_Minh date -d "@$NOW" +%H:%M:%S)
+          echo "RUN_DATE=$(TZ=Asia/Ho_Chi_Minh date -d "@$START" +%m/%d/%Y)" >> $GITHUB_ENV
+          echo "RUN_TIME_RANGE=$RUN_START_HMS - $RUN_END_HMS ($RANGE_DUR)" >> $GITHUB_ENV
+          echo "RUN_START_EPOCH=$START" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Download test reports
+        if: always()
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: test-suite-*
+          path: results
+          # Each shard's JUnit XML has the same file name (it's keyed on the
+          # device, not the shard), so merging would overwrite all but one —
+          # keep each artifact in its own results/<artifact-name>/ folder.
+          merge-multiple: false
+
+      # -------------------- PARSE JUNIT XML --------------------
+      # Parsed once here; both the Allure conversion step and the Google
+      # Sheets export step below reuse tests.json instead of each
+      # re-parsing the XML their own way.
+      - name: Parse JUnit XML reports
+        if: always()
+        run: |
+          python3 << 'PYEOF'
+          import datetime
+          import glob
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+
+          # Matches the same report location the "Generate reports" step
+          # (dorny/test-reporter) already reads from — the raw per-device
+          # JUnit XML, not the duplicate formatted copy under
+          # app/build/reports/androidTests/connected/.
+          # One results/test-suite-<api>-shard-<n>/ folder per shard.
+          PRIMARY_GLOB  = "results/*/outputs/*/connected/**/flavors/**/*.xml"
+          FALLBACK_GLOB = "results/*/outputs/**/*.xml"
+
+          files = glob.glob(PRIMARY_GLOB, recursive=True)
+          if not files:
+              print(f"⚠️ No files matched {PRIMARY_GLOB!r} — falling back to {FALLBACK_GLOB!r}")
+              files = glob.glob(FALLBACK_GLOB, recursive=True)
+          print(f"Found {len(files)} JUnit XML file(s)")
+
+          tests = []
+          for path in files:
+              try:
+                  root = ET.parse(path).getroot()
+              except ET.ParseError as e:
+                  print(f"⚠️ Skipping unparsable XML {path}: {e}")
+                  continue
+
+              suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+              for suite in suites:
+                  if suite.tag != "testsuite":
+                      continue
+                  # The suite's `timestamp` is when that shard's run started
+                  # (runner-local time, i.e. UTC); tests in it ran back to back
+                  # in file order, so each one starts after the previous ones.
+                  start_ms = None
+                  try:
+                      ts = datetime.datetime.fromisoformat(suite.get("timestamp", ""))
+                      if ts.tzinfo is None:
+                          ts = ts.replace(tzinfo=datetime.timezone.utc)
+                      start_ms = int(ts.timestamp() * 1000)
+                  except ValueError:
+                      pass
+                  for tc in suite.findall("testcase"):
+                      classname = tc.get("classname") or suite.get("name") or "Unknown"
+                      name      = tc.get("name", "unknown")
+                      time_s    = tc.get("time", "0")
+                      tc_start_ms = start_ms
+                      if start_ms is not None:
+                          start_ms += int(float(time_s or 0) * 1000)
+
+                      failure = tc.find("failure")
+                      error   = tc.find("error")
+                      skipped = tc.find("skipped")
+                      if failure is not None:
+                          status, node = "failed", failure
+                      elif error is not None:
+                          status, node = "broken", error
+                      elif skipped is not None:
+                          status, node = "skipped", skipped
+                      else:
+                          status, node = "passed", None
+
+                      tests.append({
+                          "classname": classname,
+                          "name": name,
+                          "time": time_s,
+                          "start_ms": tc_start_ms,
+                          "status": status,
+                          "message": (node.get("message", "") if node is not None else ""),
+                          "trace": ((node.text or "").strip() if node is not None else ""),
+                      })
+
+          with open("tests.json", "w") as f:
+              json.dump(tests, f)
+
+          passed  = sum(1 for t in tests if t["status"] == "passed")
+          failed  = sum(1 for t in tests if t["status"] in ("failed", "broken"))
+          skipped = sum(1 for t in tests if t["status"] == "skipped")
+          total   = len(tests)
+          pass_rate = round(passed * 100 / total, 1) if total else 0.0
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"SUITE_PASSED={passed}\n")
+              f.write(f"SUITE_FAILED={failed}\n")
+              f.write(f"SUITE_SKIPPED={skipped}\n")
+              f.write(f"SUITE_TOTAL={total}\n")
+              f.write(f"SUITE_PASS_RATE={pass_rate}\n")
+
+          print(f"Reporting counts → Passed={passed} Failed={failed} Skipped={skipped} Total={total} PassRate={pass_rate}%")
+          if total == 0:
+              print("❌ No JUnit XML tests parsed — the run likely crashed before producing a report")
+          PYEOF
+        shell: bash
+
+      # -------------------- CONVERT JUNIT XML → ALLURE RESULTS --------------------
+      - name: Convert to Allure results
+        if: always()
+        run: |
+          python3 << 'PYEOF'
+          import hashlib
+          import json
+          import os
+          import time
+          import uuid
+
+          OUT_DIR       = "allure-results"
+          TEST_RUN_JSON = os.environ["TEST_RUN_JSON"]
+          os.makedirs(OUT_DIR, exist_ok=True)
+
+          with open("tests.json") as f:
+              tests = json.load(f)
+
+          # Maps a test back to the feature it belongs to. testRun.json's
+          # testCases[].name is "<package>.<Class>#<method>" for classes with
+          # several @Test methods (e.g. "login.LoginTest#loginFailedWith...")
+          # or just "<package>.<Class>" for classes with a single test (e.g.
+          # "inspection.AccessingInlinePhotoControlsOnPlanLevelInTheInspection").
+          # It is NOT the bare simple class name iOS's testRun.json uses.
+          feature_of = {}
+          try:
+              with open(TEST_RUN_JSON) as f:
+                  suite = json.load(f)
+              for feature in suite.get("testsuite", []):
+                  for tc in feature.get("testCases", []):
+                      feature_of[tc["name"]] = feature["name"]
+          except FileNotFoundError:
+              print(f"⚠️ {TEST_RUN_JSON} not found — Allure results will have no feature grouping")
+
+          def feature_for(classname, method):
+              # JUnit's `classname` is fully qualified
+              # (com.record360.app.test.tests.login.LoginTest); testRun.json
+              # only keys on the last two segments (package.Class).
+              pkg_class = ".".join(classname.split(".")[-2:])
+              return feature_of.get(f"{pkg_class}#{method}") \
+                  or feature_of.get(pkg_class, "Unknown")
+
+          STATUS_MAP = {"passed": "passed", "failed": "failed", "broken": "broken", "skipped": "skipped"}
+
+          # Real start times from the JUnit XML when available, so Allure's
+          # own date/duration header reflects when the tests actually ran;
+          # otherwise lay tests out back to back from the workflow start.
+          cursor = int(os.environ.get("RUN_START_EPOCH") or time.time()) * 1000
+          for t in tests:
+              dur_ms = max(1, int(float(t.get("time") or 0) * 1000))
+              if t.get("start_ms") is not None:
+                  start = t["start_ms"]
+              else:
+                  start, cursor = cursor, cursor + dur_ms
+              stop = start + dur_ms
+
+              result = {
+                  "uuid": str(uuid.uuid4()),
+                  "historyId": hashlib.md5(f'{t["classname"]}.{t["name"]}'.encode()).hexdigest(),
+                  "name": t["name"],
+                  "fullName": f'{t["classname"]}#{t["name"]}',
+                  "status": STATUS_MAP.get(t["status"], "broken"),
+                  "stage": "finished",
+                  "start": start,
+                  "stop": stop,
+                  "labels": [
+                      {"name": "suite", "value": "Smoke"},
+                      {"name": "feature", "value": feature_for(t["classname"], t["name"])},
+                      {"name": "package", "value": t["classname"]},
+                      {"name": "framework", "value": "JUnit4"},
+                      {"name": "language", "value": "java"},
+                  ],
+              }
+              if t["status"] in ("failed", "broken") and (t.get("message") or t.get("trace")):
+                  result["statusDetails"] = {
+                      "message": (t.get("message") or "")[:2000],
+                      "trace": (t.get("trace") or "")[:8000],
+                  }
+
+              with open(os.path.join(OUT_DIR, f'{result["uuid"]}-result.json'), "w") as f:
+                  json.dump(result, f)
+
+          print(f"✅ Wrote {len(tests)} Allure result file(s) to {OUT_DIR}/")
+          PYEOF
+        env:
+          TEST_RUN_JSON: ${{ env.PATH_TEST_SUITE }}
+        shell: bash
+
+      # -------------------- EXPORT FAILED TEST CASES TO GOOGLE SHEETS --------------------
+      # Same sheet layout/formatting as ios-test.yml / smoke-test-manual.yml's
+      # exports (feature header rows, checkbox + Type/Status dropdowns,
+      # colored chips) — reuses tests.json from the parse step above instead
+      # of re-reading the XML/xcresult.
+      - name: Export Failed Test Cases to Google Sheets
+        if: always() && env.SUITE_FAILED != '' && env.SUITE_FAILED != '0'
+        run: |
+          python3 -m pip install --quiet google-auth google-auth-httplib2 google-api-python-client
+
+          python3 << 'PYEOF'
+          import datetime
+          import json
+          import os
+          from collections import OrderedDict
+
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+
+          # ── Config ────────────────────────────────────────────────────────────
+          SA_JSON       = os.environ["GSHEET_SERVICE_ACCOUNT"]
+          SPREADSHEET   = os.environ["GSHEET_SPREADSHEET_ID"]
+          TEST_RUN_JSON = os.environ["TEST_RUN_JSON"]
+          SCOPES        = ["https://www.googleapis.com/auth/spreadsheets"]
+
+          # ── Build test → feature map from testRun.json ────────────────────────
+          # testCases[].name is "<package>.<Class>#<method>" for classes with
+          # several @Test methods, or just "<package>.<Class>" for classes
+          # with a single test — not the bare simple class name. Each test
+          # case may also carry an "id" (e.g. "ST17") for the sheet's ID column.
+          ID_KEYS = ("id", "testCaseId", "tcId", "caseId", "ID")
+          feature_of = {}
+          id_of = {}
+          try:
+              with open(TEST_RUN_JSON) as f:
+                  suite = json.load(f)
+              for feature in suite.get("testsuite", []):
+                  for tc in feature.get("testCases", []):
+                      feature_of[tc["name"]] = feature["name"]
+                      id_of[tc["name"]] = str(next(
+                          (tc[k] for k in ID_KEYS if tc.get(k)), ""))
+          except FileNotFoundError:
+              print(f"⚠️ {TEST_RUN_JSON} not found — failed tests will be grouped under 'Unknown'")
+
+          def pkg_class_of(classname):
+              # JUnit's `classname` is fully qualified
+              # (com.record360.app.test.tests.login.LoginTest); testRun.json
+              # only keys on the last two segments (package.Class).
+              return ".".join(classname.split(".")[-2:])
+
+          def feature_for(pkg_class, method):
+              return feature_of.get(f"{pkg_class}#{method}") \
+                  or feature_of.get(pkg_class, "Unknown")
+
+          def id_for(pkg_class, method):
+              return id_of.get(f"{pkg_class}#{method}") \
+                  or id_of.get(pkg_class, "")
+
+          # ── Load failed tests from tests.json ─────────────────────────────────
+          with open("tests.json") as f:
+              tests = json.load(f)
+
+          # feature → [(test case ID, "package.Class#method"), ...]
+          feature_map = OrderedDict()
+          for t in tests:
+              if t["status"] not in ("failed", "broken"):
+                  continue
+              pkg_class = pkg_class_of(t["classname"])
+              label = f'{pkg_class}#{t["name"]}'
+              feature_map.setdefault(feature_for(pkg_class, t["name"]), []).append(
+                  (id_for(pkg_class, t["name"]), label))
+
+          if not feature_map:
+              print("No failed test cases found — skipping Google Sheets export.")
+              raise SystemExit(0)
+
+          total_failed = sum(len(v) for v in feature_map.values())
+          print(f"Found {total_failed} failed test case(s) across {len(feature_map)} feature(s):")
+          for feat, tcs in feature_map.items():
+              print(f"  [{feat}]")
+              for tc_id, tc in tcs:
+                  print(f"    • [{tc_id or 'no id'}] {tc}")
+
+          # ── Auth ──────────────────────────────────────────────────────────────
+          creds   = service_account.Credentials.from_service_account_info(
+                        json.loads(SA_JSON), scopes=SCOPES)
+          service = build("sheets", "v4", credentials=creds)
+          sheets  = service.spreadsheets()
+
+          # ── Resolve target sheet name (MM/DD or MM/DD-2, MM/DD-3 …) ──────────
+          tz        = datetime.timezone(datetime.timedelta(hours=7))
+          today     = datetime.datetime.now(tz)
+          base_name = today.strftime("%m/%d")
+
+          meta     = sheets.get(spreadsheetId=SPREADSHEET).execute()
+          existing = {s["properties"]["title"] for s in meta["sheets"]}
+
+          sheet_name = base_name
+          idx = 2
+          while sheet_name in existing:
+              sheet_name = f"{base_name}-{idx}"
+              idx += 1
+
+          # ── Build row data ────────────────────────────────────────────────────
+          # Columns: A=ID | B=TCs | C=Run | D=Type | E=Status | F=Note | G-Z=empty
+          TOTAL_COLS = 26
+          EMPTY      = [""] * (TOTAL_COLS - 6)
+
+          header_row          = ["ID", "TCs", "Run", "Type", "Status", "Note"] + EMPTY
+          all_rows            = [header_row]
+          feature_row_indices = []
+          # (start, end) row ranges of each feature's test-case rows — the
+          # checkbox/dropdowns/centering are applied per block so they never
+          # land on the feature header rows in between.
+          tc_blocks           = []
+
+          for feat_name, tcs in feature_map.items():
+              feature_row_indices.append(len(all_rows))
+              # Feature name goes in the TCs column; the ID column stays for IDs only
+              all_rows.append(["", feat_name] + [""] * (TOTAL_COLS - 2))
+              block_start = len(all_rows)
+              for tc_id, tc in tcs:
+                  # C=True (boolean) → renders as a checked checkbox after validation applied
+                  all_rows.append([tc_id, tc, True, "Existing", "Fail", ""] + EMPTY)
+              tc_blocks.append((block_start, len(all_rows)))
+
+          missing_ids = sum(1 for tcs in feature_map.values() for tc_id, _ in tcs if not tc_id)
+          if missing_ids:
+              print(f"⚠️ {missing_ids} failed test case(s) have no ID in {TEST_RUN_JSON} "
+                    f"(looked for keys {', '.join(ID_KEYS)}) — their ID cell is left empty")
+
+          total_rows = len(all_rows)
+
+          # ── Create the new sheet ──────────────────────────────────────────────
+          resp = sheets.batchUpdate(
+              spreadsheetId=SPREADSHEET,
+              body={"requests": [{"addSheet": {"properties": {
+                  "title": sheet_name,
+                  "index": 0,
+                  "gridProperties": {
+                      "rowCount": max(200, total_rows + 10),
+                      "columnCount": TOTAL_COLS,
+                  },
+              }}}]},
+          ).execute()
+          new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
+          print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
+
+          # Surface the new tab's gid so the Notify step can deep-link
+          # straight to it — a bare spreadsheet URL opens whatever sheet was
+          # last active for the doc, not necessarily this newly created one.
+          with open(os.environ["GITHUB_ENV"], "a") as gh:
+              gh.write(f"GSHEET_NEW_SHEET_ID={new_sheet_id}\n")
+
+          def cr(r1, c1, r2, c2):
+              return {"sheetId": new_sheet_id,
+                      "startRowIndex": r1, "endRowIndex": r2,
+                      "startColumnIndex": c1, "endColumnIndex": c2}
+
+          DARK_BG   = {"red": 0.2,   "green": 0.2,   "blue": 0.2}
+          YELLOW_BG = {"red": 1.0,   "green": 0.949, "blue": 0.0}
+          RED_BG    = {"red": 0.863, "green": 0.196, "blue": 0.184}
+          GREEN_BG  = {"red": 0.118, "green": 0.588, "blue": 0.235}
+          GRAY_BG   = {"red": 0.851, "green": 0.851, "blue": 0.851}
+          WHITE     = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
+          BLACK     = {"red": 0.0,   "green": 0.0,   "blue": 0.0}
+
+          # ── STEP 1 — cell formatting ──────────────────────────────────────────
+          fmt_requests = [{
+              "repeatCell": {
+                  "range": cr(0, 0, 1, TOTAL_COLS),
+                  "cell": {"userEnteredFormat": {
+                      "backgroundColor": DARK_BG,
+                      "textFormat": {"bold": True, "foregroundColor": WHITE, "fontSize": 10},
+                      "horizontalAlignment": "CENTER",
+                      "verticalAlignment": "MIDDLE",
+                  }},
+                  "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+              }
+          }]
+
+          for r in feature_row_indices:
+              fmt_requests.append({
+                  "repeatCell": {
+                      "range": cr(r, 0, r + 1, TOTAL_COLS),
+                      "cell": {"userEnteredFormat": {
+                          "backgroundColor": YELLOW_BG,
+                          "textFormat": {"bold": True, "foregroundColor": BLACK, "fontSize": 10},
+                          "horizontalAlignment": "LEFT",
+                          "verticalAlignment": "MIDDLE",
+                      }},
+                      "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                  }
+              })
+
+          for first_tc, last_tc in tc_blocks:
+              for col in (0, 2, 3, 4):  # ID, Run, Type, Status
+                  fmt_requests.append({
+                      "repeatCell": {
+                          "range": cr(first_tc, col, last_tc, col + 1),
+                          "cell": {"userEnteredFormat": {
+                              "horizontalAlignment": "CENTER",
+                              "verticalAlignment": "MIDDLE",
+                          }},
+                          "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)",
+                      }
+                  })
+
+          sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": fmt_requests}).execute()
+          print("✅ Cell formatting applied.")
+
+          # ── STEP 2 — data validation (checkbox + dropdowns) ───────────────────
+          if tc_blocks:
+              val_requests = []
+              for first_tc, last_tc in tc_blocks:
+                  val_requests += [
+                      {"setDataValidation": {"range": cr(first_tc, 2, last_tc, 3), "rule": {
+                          "condition": {"type": "BOOLEAN"}, "showCustomUi": True, "strict": True}}},
+                      {"setDataValidation": {"range": cr(first_tc, 3, last_tc, 4), "rule": {
+                          "condition": {"type": "ONE_OF_LIST", "values": [
+                              {"userEnteredValue": "Existing"}, {"userEnteredValue": "New Feature"}]},
+                          "showCustomUi": True, "strict": True}}},
+                      {"setDataValidation": {"range": cr(first_tc, 4, last_tc, 5), "rule": {
+                          "condition": {"type": "ONE_OF_LIST", "values": [
+                              {"userEnteredValue": "Fail"}, {"userEnteredValue": "Pass"}]},
+                          "showCustomUi": True, "strict": True}}},
+                  ]
+              sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": val_requests}).execute()
+              print("✅ Data validation applied.")
+
+          # ── STEP 3 — conditional formatting (chip colors) ─────────────────────
+          if tc_blocks:
+              type_ranges   = [cr(a, 3, b, 4) for a, b in tc_blocks]
+              status_ranges = [cr(a, 4, b, 5) for a, b in tc_blocks]
+              cond_requests = [
+                  {"addConditionalFormatRule": {"index": 0, "rule": {
+                      "ranges": type_ranges,
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Existing"}]},
+                          "format": {"backgroundColor": GRAY_BG, "textFormat": {"bold": True, "foregroundColor": BLACK}},
+                      }}}},
+                  {"addConditionalFormatRule": {"index": 1, "rule": {
+                      "ranges": type_ranges,
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "New Feature"}]},
+                          "format": {"backgroundColor": {"red": 0.643, "green": 0.761, "blue": 0.957},
+                                     "textFormat": {"bold": True, "foregroundColor": BLACK}},
+                      }}}},
+                  {"addConditionalFormatRule": {"index": 2, "rule": {
+                      "ranges": status_ranges,
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Fail"}]},
+                          "format": {"backgroundColor": RED_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
+                      }}}},
+                  {"addConditionalFormatRule": {"index": 3, "rule": {
+                      "ranges": status_ranges,
+                      "booleanRule": {
+                          "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "Pass"}]},
+                          "format": {"backgroundColor": GREEN_BG, "textFormat": {"bold": True, "foregroundColor": WHITE}},
+                      }}}},
+              ]
+              sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": cond_requests}).execute()
+              print("✅ Conditional formatting applied.")
+
+          # ── STEP 4 — write data (after validation, so True renders checked) ───
+          sheets.values().update(
+              spreadsheetId=SPREADSHEET,
+              range=f"'{sheet_name}'!A1",
+              valueInputOption="RAW",
+              body={"values": all_rows},
+          ).execute()
+          print("✅ Data written.")
+
+          # ── STEP 5 — auto-resize A-F + freeze header row ──────────────────────
+          sheets.batchUpdate(spreadsheetId=SPREADSHEET, body={"requests": [
+              {"autoResizeDimensions": {"dimensions": {
+                  "sheetId": new_sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 6}}},
+              {"updateSheetProperties": {
+                  "properties": {"sheetId": new_sheet_id, "gridProperties": {"frozenRowCount": 1}},
+                  "fields": "gridProperties.frozenRowCount"}},
+          ]}).execute()
+          print("✅ Auto-resize and freeze applied.")
+
+          print(f"\n🎉 Exported {total_failed} failed test case(s) to sheet '{sheet_name}'.")
+          PYEOF
+        env:
+          GSHEET_SERVICE_ACCOUNT: ${{ secrets.IOS_GSHEET_SERVICE_ACCOUNT }}
+          GSHEET_SPREADSHEET_ID: ${{ secrets.ANDROID_GSHEET_SPREADSHEET_ID }}
+          TEST_RUN_JSON: ${{ env.PATH_TEST_SUITE }}
+        shell: bash
+
+      # -------------------- ALLURE 3 HISTORY (trend persistence) --------------------
+      # Skipped when the run was cancelled (e.g. someone manually stops it
+      # mid-test) — `cancelled()` is a GitHub Actions status-check function
+      # distinct from a job's own success/failure, so `!cancelled()` still
+      # runs this on both pass and fail, just not on a manual cancel.
+      - name: Get Allure history
+        if: ${{ !cancelled() }}
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: ${{ secrets.WDIO_ANDROID_REPOS }}
+          token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+          ref: allure-history
+          path: report-history
+
+      - name: Restore Allure history file
+        if: ${{ !cancelled() }}
+        run: |
+          cp report-history/history.jsonl history.jsonl 2>/dev/null \
+            || echo "No previous history.jsonl (first run?) — starting fresh."
+        shell: bash
+
+      # -------------------- GENERATE ALLURE 3 REPORT --------------------
+      - name: Generate Allure 3 report
+        if: ${{ !cancelled() }}
+        run: |
+          npm install allure --no-save >/dev/null 2>&1 || true
+          cat > allurerc.mjs <<'JS'
+          import { defineConfig } from "allure";
+
+          const v = (k) => process.env[k] || "";
+
+          export default defineConfig({
+            name: "Record360 Android Instrumentation Tests",
+            output: "./allure-report",
+            historyPath: "./history.jsonl",
+            appendHistory: true,
+            historyLimit: 10,
+            variables: {
+              "Platform": "Android",
+              "SDK Version": v("SDK_VERSION"),
+              "Device Profile": v("DEVICE_PROFILE"),
+              "Device Arch": v("DEVICE_ARCH"),
+              "Device Target": v("DEVICE_TARGET"),
+              // Only when a build version was entered for the run
+              ...(v("BUILD_VERSION") ? { "Build Version": v("BUILD_VERSION") } : {}),
+            },
+            categories: {
+              rules: [
+                { name: "Product Bugs", matchers: { statuses: ["failed"] } },
+                { name: "Test Bugs",    matchers: { statuses: ["broken"] } },
+                { name: "Skipped",      matchers: { statuses: ["skipped"] } },
+              ],
+            },
+            plugins: {
+              awesome: {
+                options: {
+                  reportName: "Record360 Android Instrumentation Tests",
+                  singleFile: false,
+                  reportLanguage: "en",
+                },
+              },
+              dashboard: {
+                options: {
+                  reportName: "Record360 Android — Dashboard",
+                  reportLanguage: "en",
+                },
+              },
+            },
+          });
+          JS
+          allure --version 2>/dev/null || npx --yes allure --version || true
+          echo "Generating Allure 3 report from allure-results ..."
+          allure generate allure-results 2>/dev/null \
+            || npx --yes allure generate allure-results
+          echo "---- generated report tree ----"
+          find allure-report -maxdepth 2 -name index.html || true
+
+          # Allure renders the header subtitle (data-testid="report-data") as
+          # "October 14, 2026 at 4:51:12 PM (32m 35s)" from the test results,
+          # in the viewer's locale, with no option to change it. Swap it for
+          # the dashboard-style "10/14/2026 · 16:21:10 - 16:59:50 (38m 40s)"
+          # whole-workflow range (GMT+7) once the page has rendered it.
+          if [ -n "${RUN_DATE:-}" ] && [ -n "${RUN_TIME_RANGE:-}" ]; then
+            python3 - <<'PYEOF'
+          import glob
+          import json
+          import os
+
+          subtitle = f'{os.environ["RUN_DATE"]} · {os.environ["RUN_TIME_RANGE"]}'
+          script = """<script>
+          (function () {
+            var text = %s;
+            function fix() {
+              document.querySelectorAll('[data-testid="report-data"]').forEach(function (el) {
+                if (el.textContent !== text) el.textContent = text;
+              });
+            }
+            new MutationObserver(fix).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+            fix();
+          })();
+          </script>
+          """ % json.dumps(subtitle)
+
+          for path in glob.glob("allure-report/**/index.html", recursive=True):
+              with open(path, encoding="utf-8") as f:
+                  html = f.read()
+              if "</body>" not in html:
+                  continue
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(html.replace("</body>", script + "</body>", 1))
+              print(f"Set report subtitle in {path}: {subtitle}")
+          PYEOF
+          fi
+        shell: bash
+
+      - name: Save Allure history for next run
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p allure-history-branch
+          cp history.jsonl allure-history-branch/history.jsonl 2>/dev/null \
+            || echo "No history.jsonl produced — skipping save."
+        shell: bash
+
+      - name: Push report history to branch
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.WDIO_ACCESS_TOKEN }}
+          external_repository: ${{ secrets.WDIO_ANDROID_REPOS }}
+          publish_branch: allure-history
+          publish_dir: allure-history-branch
+
+      # -------------------- ARTIFACTS --------------------
+      - name: Upload Allure HTML report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report/
+          retention-days: 7
+
+      - name: Prepare deploy folder
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p deploy
+          if [ -f allure-report/awesome/index.html ]; then
+            cp -r allure-report/awesome/. deploy/
+          elif [ -d allure-report ] && [ -n "$(ls -A allure-report 2>/dev/null)" ]; then
+            cp -r allure-report/. deploy/
+          else
+            echo "⚠️ No allure-report was generated — deploying a placeholder page instead."
+            echo "<html><body><h1>No Allure report was generated for this run.</h1></body></html>" > deploy/index.html
+          fi
+          if [ -d allure-report/dashboard ]; then
+            mkdir -p deploy/dashboard
+            cp -r allure-report/dashboard/. deploy/dashboard/
+          fi
+
+      # AWS credentials for the shared S3 report bucket only exist as secrets
+      # in Record360/dashboard, not in this repo. Rather than duplicating
+      # them here, upload the rendered report as an artifact and ask
+      # dashboard's own workflow (which already has those secrets) to fetch
+      # it and do the actual S3 sync.
+      - name: Upload deploy folder for cross-repo S3 deploy
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-deploy-android
+          path: deploy/
+          retention-days: 1
+
+      # TEMPORARY (testing only): points at release-features-test.yml on the
+      # test-allure-report branch, whose test-cross-repo-deploy job runs the
+      # same download-artifact + S3 sync steps deploy-allure-to-s3.yml will.
+      # deploy-allure-to-s3.yml isn't on dashboard's master yet, so it can't
+      # be dispatched at all — switch this back to
+      # ".../workflows/deploy-allure-to-s3.yml/dispatches" with "ref":"master"
+      # once that file is merged there.
+      - name: Trigger Allure S3 deploy in dashboard repo
+        if: ${{ !cancelled() }}
+        run: |
+          curl -f -X POST \
+            -H "Authorization: token ${{ secrets.WDIO_ACCESS_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Record360/dashboard/actions/workflows/release-features-test.yml/dispatches \
+            -d '{"ref":"test-allure-report","inputs":{"source_repo":"${{ github.repository }}","run_id":"${{ github.run_id }}","artifact_name":"allure-deploy-android","prefix":"android"}}'
+        shell: bash
+
+      # -------------------- NOTIFY GOOGLE CHAT --------------------
+      # Skipped on a manual cancel — see the Allure history step above for
+      # why `!cancelled()` is used instead of `always()` here.
+      - name: Notify Google Chat
+        if: ${{ !cancelled() }}
+        run: |
+          # job.status here is `report`'s own status, not the test job's — a
+          # cancelled/failed `test` doesn't fail `report` (needs: [...] +
+          # if: always()), so real PASSED/FAILED signal comes from the
+          # SUITE_* counts set by the parse step above.
+          if [ -n "${SUITE_TOTAL:-}" ] && [ "${SUITE_TOTAL:-0}" != "0" ]; then
+            if [ "${SUITE_FAILED:-0}" = "0" ]; then
+              STATUS="PASSED"; STATUS_COLOR="#0F9D58"; STATUS_ICON="✅"
+            else
+              STATUS="FAILED"; STATUS_COLOR="#DB4437"; STATUS_ICON="❌"
+            fi
+          else
+            STATUS="CANCELLED"; STATUS_COLOR="#F4B400"; STATUS_ICON="⚠️"
+          fi
+
+          export STATUS STATUS_COLOR STATUS_ICON
+          export DATE_TIME="$(TZ=Asia/Ho_Chi_Minh date '+%d/%m/%Y %H:%M:%S')"
+          export REPORT_URL="https://360-staging-allure-report.s3.amazonaws.com/android/index.html"
+          # Deep-link to the sheet tab this run actually created (if any) —
+          # a bare spreadsheet URL opens whatever sheet was last active for
+          # the doc, not necessarily this run's tab.
+          if [ -n "${GSHEET_NEW_SHEET_ID:-}" ]; then
+            export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.ANDROID_GSHEET_SPREADSHEET_ID }}/edit#gid=${GSHEET_NEW_SHEET_ID}"
+          else
+            export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.ANDROID_GSHEET_SPREADSHEET_ID }}/edit"
+          fi
+          export PASSED="${SUITE_PASSED:-0}"
+          export FAILED="${SUITE_FAILED:-0}"
+          export SKIPPED="${SUITE_SKIPPED:-0}"
+          export TOTAL="${SUITE_TOTAL:-0}"
+          export PASS_RATE="${SUITE_PASS_RATE:-0}"
+          export DURATION="${TEST_DURATION:-N/A}"
+          export DEVICE="${DEVICE}"
+          export BRANCH_AUTO="${{ github.event.inputs.main-branch }}"
+          export BRANCH_CODE="${{ github.event.inputs.submodule-branch }}"
+
+          python3 - <<'PYEOF'
+          import html
+          import json
+          import os
+          from string import Template
+
+          with open(".workflow-repo/.github/googleChat/android-report-card.json") as f:
+              tpl = Template(f.read())
+
+          keys = ["STATUS_ICON", "DATE_TIME", "REPORT_URL", "GSHEET_URL", "PASSED", "PASS_RATE",
+                  "FAILED", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH_AUTO", "BRANCH_CODE", "STATUS_COLOR", "STATUS"]
+          values = {k: os.environ.get(k, "") for k in keys}
+          # Free text typed into the run form — escape it for the card's HTML
+          # and for the JSON string it's substituted into, so quotes, <, & or
+          # newlines can't break the payload.
+          note = os.environ.get("NOTE", "").strip() or "-"
+          values["NOTE"] = json.dumps(html.escape(note).replace("\n", "<br>"))[1:-1]
+          payload = tpl.safe_substitute(values)
+          json.loads(payload)  # fail here, not at the webhook, if it's malformed
+
+          with open("payload.json", "w") as f:
+              f.write(payload)
+          PYEOF
+
+          curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d @payload.json
+        env:
+          NOTE: ${{ inputs.note }}
+        shell: bash
+
+      - name: Upload merged results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Instrumentation Test Result
+          path: |
+            allure-results/
+            tests.json
+          retention-days: 7
+          if-no-files-found: warn
