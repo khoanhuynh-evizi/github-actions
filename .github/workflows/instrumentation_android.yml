@@ -151,7 +151,9 @@ jobs:
       - name: Set Up JDK Environment
         uses: actions/setup-java@v4
         with:
-          distribution: 'jetbrains'
+          # Temurin is preinstalled in the runner tool cache. The jetbrains distribution resolves versions through
+          # the GitHub API unauthenticated and hits the shared runner IP rate limit.
+          distribution: 'temurin'
           java-version: '21'
 
       - name: Setup Gradle
