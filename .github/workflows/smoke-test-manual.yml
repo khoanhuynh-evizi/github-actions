@@ -256,34 +256,34 @@ jobs:
         path: wdio/reports/
         retention-days: 7
 
-    # AWS credentials for the shared S3 report bucket only exist as secrets
-    # in Record360/dashboard, not in this repo. Rather than duplicating
-    # them here, upload the rendered report as an artifact and ask
-    # dashboard's own workflow (which already has those secrets) to fetch
-    # it and do the actual S3 sync.
-    - name: Upload deploy folder for cross-repo S3 deploy
-      if: ${{ !cancelled() }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: allure-deploy-dashboard
-        path: deploy/
-        retention-days: 1
-
-    # TEMPORARY (testing only): points at release-features-test.yml on the
-    # test-allure-report branch, whose test-cross-repo-deploy job runs the
-    # same download-artifact + S3 sync steps deploy-allure-to-s3.yml will.
-    # deploy-allure-to-s3.yml isn't on dashboard's master yet, so it can't
-    # be dispatched at all — switch this back to
-    # ".../workflows/deploy-allure-to-s3.yml/dispatches" with "ref":"master"
-    # once that file is merged there.
-    - name: Trigger Allure S3 deploy in dashboard repo
+    - name: Create firebase config
       if: ${{ !cancelled() }}
       run: |
-        curl -f -X POST \
-          -H "Authorization: token ${{ secrets.WDIO_ACCESS_TOKEN }}" \
-          -H "Accept: application/vnd.github+json" \
-          https://api.github.com/repos/Record360/dashboard/actions/workflows/release-features-test.yml/dispatches \
-          -d '{"ref":"test-allure-report","inputs":{"source_repo":"${{ github.repository }}","run_id":"${{ github.run_id }}","artifact_name":"allure-deploy-dashboard","prefix":"dashboard"}}'
+        echo '{
+          "hosting": {
+            "public": "deploy",
+            "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+            "limit": 3
+          }
+        }' > firebase.json
+
+        echo '{
+          "projects": {
+            "default": "record360-report"
+          }
+        }' > .firebaserc
+
+    - name: Set up Firebase credentials
+      if: ${{ !cancelled() }}
+      run: echo '${{ secrets.CHINH_FIREBASE_SERVICE_ACCOUNT }}' > $GITHUB_WORKSPACE/service-account.json
+
+    - name: Deploy Allure Report to Firebase Hosting
+      if: ${{ !cancelled() }}
+      uses: w9jds/firebase-action@v13.27.0
+      with:
+        args: deploy --only hosting --project record360-report
+      env:
+        GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
 
     - name: Parse Spec Reporter Result
       if: ${{ !cancelled() }}
@@ -511,12 +511,6 @@ jobs:
         ))
         new_sheet_id = resp["replies"][0]["addSheet"]["properties"]["sheetId"]
         print(f"Created sheet: '{sheet_name}' (id={new_sheet_id})")
-
-        # Surface the new tab's gid so the Notify step can deep-link straight
-        # to it — a bare spreadsheet URL opens whatever sheet was last active
-        # for the doc, not necessarily this newly created one.
-        with open(os.environ["GITHUB_ENV"], "a") as gh:
-            gh.write(f"GSHEET_NEW_SHEET_ID={new_sheet_id}\n")
 
         # ── Helper ────────────────────────────────────────────────────────────
         def cr(r1, c1, r2, c2):
@@ -819,20 +813,13 @@ jobs:
 
         export STATUS STATUS_COLOR STATUS_ICON
         export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
-        export REPORT_URL="https://360-staging-allure-report.s3.amazonaws.com/dashboard/index.html"
-        # Deep-link to the sheet tab this run actually created (if any) —
-        # a bare spreadsheet URL opens whatever sheet was last active for
-        # the doc, not necessarily this run's tab.
-        if [ -n "${GSHEET_NEW_SHEET_ID:-}" ]; then
-          export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.L_GSHEET_SPREADSHEET_ID }}/edit#gid=${GSHEET_NEW_SHEET_ID}"
-        else
-          export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.L_GSHEET_SPREADSHEET_ID }}/edit"
-        fi
+        export REPORT_URL="https://record360-report.web.app"
+        export GSHEET_URL="https://docs.google.com/spreadsheets/d/${{ secrets.L_GSHEET_SPREADSHEET_ID }}/edit"
         export BRANCH_WDIO="${{ github.event.inputs.branchWdio || secrets.DEFAULT_BRANCH_WDIO }}"
         export BRANCH_DASHBOARD="${{ github.event.inputs.branchDashboard || secrets.DEFAULT_BRANCH_DASHBOARD }}"
 
         envsubst < .github/googleChat/dashboard-card.json > payload.json
 
-        curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
+        curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
           -H "Content-Type: application/json" \
           -d @payload.json
