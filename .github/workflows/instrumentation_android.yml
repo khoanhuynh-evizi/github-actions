@@ -44,6 +44,11 @@ on:
         required: false
         type: string
         default: 'google_apis'
+      test-retries:
+        description: 'How many times failed tests are rerun (0 disables retries)'
+        required: false
+        type: string
+        default: '2'
 env:
   PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
 
@@ -216,13 +221,166 @@ jobs:
           EOF
           chmod +x "$RUNNER_TEMP/monitor.sh"
 
-      # Same test selection as scripts/run-testsuite.sh in the app repo
-      # (enabled test cases from testRun.json, split on commas/spaces), but
-      # round-robins them across shards so each shard gets an even slice.
-      # Lives here so sharding needs no change to the app repo's script.
-      - name: Create shard test script
-        if: "${{ inputs.instrument_options == '' }}"
+      # Shared by the sharded full run and the custom instrument_options run: failed tests are rerun
+      # (ANDROID_TEST_RETRIES times) and folded into the first run's JUnit XML before it is uploaded.
+      - name: Create test run scripts
         run: |
+          cat > "$RUNNER_TEMP/merge_retry.py" <<'PYEOF'
+          #!/usr/bin/env python3
+          """Retry helper for connectedAndroidTest JUnit XML.
+
+          failed <dir> <package>          print failed tests of the run in <dir> as comma separated class#method
+          merge  <final_dir> <retry_dir> <attempt>
+                                           fold a rerun into the full first-run report: a test that passed on the rerun
+                                           loses its failure (and keeps a note), a test that failed again keeps the latest
+                                           failure. Rerun logcat files are copied next to the originals with a -retryN suffix.
+          """
+          import glob
+          import os
+          import shutil
+          import sys
+          import xml.etree.ElementTree as ET
+
+
+          def junit_files(directory):
+              return sorted(glob.glob(os.path.join(directory, "**", "TEST-*.xml"), recursive=True))
+
+
+          def testcases(path):
+              root = ET.parse(path).getroot()
+              suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+              for suite in suites:
+                  for tc in suite.findall("testcase"):
+                      yield suite, tc
+
+
+          def is_failed(tc):
+              return tc.find("failure") is not None or tc.find("error") is not None
+
+
+          def cmd_failed(directory, package):
+              names = []
+              for path in junit_files(directory):
+                  for _, tc in testcases(path):
+                      if is_failed(tc):
+                          classname = tc.get("classname", "")
+                          prefix = package + "."
+                          short = classname[len(prefix):] if classname.startswith(prefix) else classname
+                          names.append(f"{short}#{tc.get('name')}")
+              print(",".join(dict.fromkeys(names)))
+
+
+          def cmd_merge(final_dir, retry_dir, attempt):
+              retried = {}
+              for path in junit_files(retry_dir):
+                  for _, tc in testcases(path):
+                      retried[(tc.get("classname"), tc.get("name"))] = tc
+
+              for path in junit_files(final_dir):
+                  tree = ET.parse(path)
+                  root = tree.getroot()
+                  suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+                  for suite in suites:
+                      for tc in suite.findall("testcase"):
+                          rerun = retried.get((tc.get("classname"), tc.get("name")))
+                          if rerun is None or not is_failed(tc):
+                              continue
+                          for node in tc.findall("failure") + tc.findall("error"):
+                              tc.remove(node)
+                          if is_failed(rerun):
+                              for node in rerun.findall("failure") + rerun.findall("error"):
+                                  tc.append(node)
+                              note = f"Failed again on retry {attempt}"
+                          else:
+                              note = f"Passed on retry {attempt} after failing the first run"
+                              tc.set("time", rerun.get("time", tc.get("time", "0")))
+                          out = tc.find("system-out")
+                          if out is None:
+                              out = ET.SubElement(tc, "system-out")
+                          out.text = ((out.text or "") + "\n" + note).strip()
+                      failures = sum(1 for tc in suite.findall("testcase") if tc.find("failure") is not None)
+                      errors = sum(1 for tc in suite.findall("testcase") if tc.find("error") is not None)
+                      suite.set("failures", str(failures))
+                      suite.set("errors", str(errors))
+                  tree.write(path, encoding="UTF-8", xml_declaration=True)
+
+              # Keep the rerun logcats next to the first-run ones
+              for src in glob.glob(os.path.join(retry_dir, "**", "logcat-*.txt"), recursive=True):
+                  rel = os.path.relpath(src, retry_dir)
+                  dst = os.path.join(final_dir, os.path.splitext(rel)[0] + f"-retry{attempt}.txt")
+                  os.makedirs(os.path.dirname(dst), exist_ok=True)
+                  shutil.copyfile(src, dst)
+
+
+          if __name__ == "__main__":
+              if sys.argv[1] == "failed":
+                  cmd_failed(sys.argv[2], sys.argv[3])
+              elif sys.argv[1] == "merge":
+                  cmd_merge(sys.argv[2], sys.argv[3], sys.argv[4])
+              else:
+                  sys.exit(f"unknown command {sys.argv[1]}")
+          PYEOF
+
+          cat > "$RUNNER_TEMP/run-with-retry.sh" <<'EOF'
+          #!/usr/bin/env bash
+          # usage: run-with-retry.sh <package> <tests>
+          # <tests> are class or class#method names relative to <package>, separated by commas or spaces.
+          # Runs the tests, then reruns only the failed ones up to ANDROID_TEST_RETRIES times and folds the reruns into the
+          # first run's JUnit XML, so the upload / report steps keep reading app/build/outputs/*/connected as before.
+          set -o pipefail
+          package="$1"
+          tests=$(tr ', ' '\n\n' <<< "$2" | grep -v '^$' | sed "s/^/$package./" | paste -sd, -)
+          retries="${ANDROID_TEST_RETRIES:-2}"
+          results="app/build/outputs/androidTest-results/connected"
+          final="$RUNNER_TEMP/connected-final"
+          merge="$RUNNER_TEMP/merge_retry.py"
+
+          run_tests() {
+            rm -rf "$results"
+            ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$1" --continue --stacktrace
+          }
+
+          if [[ -z "$tests" ]]; then
+            echo "No tests to run."
+            exit 0
+          fi
+
+          run_tests "$tests"; rc=$?
+          if [[ $rc -eq 0 || "$retries" -le 0 ]]; then exit $rc; fi
+          if [[ -z "$(find "$results" -name 'TEST-*.xml' 2>/dev/null)" ]]; then
+            echo "No JUnit report was produced, not retrying."
+            exit $rc
+          fi
+
+          rm -rf "$final"; cp -r "$results" "$final"
+          if [[ -z "$(python3 "$merge" failed "$final" "$package")" ]]; then
+            # Gradle failed without a failed test in the report (build error, instrumentation crash): don't hide it
+            echo "Run failed without a failed test in the report, not retrying."
+            exit $rc
+          fi
+
+          for attempt in $(seq 1 "$retries"); do
+            failed=$(python3 "$merge" failed "$final" "$package")
+            [[ -z "$failed" ]] && break
+            echo "Retry $attempt of $retries for:"; tr ',' '\n' <<< "$failed"
+            run_tests "$(tr ',' '\n' <<< "$failed" | sed "s/^/$package./" | paste -sd, -)"
+            if [[ -z "$(find "$results" -name 'TEST-*.xml' 2>/dev/null)" ]]; then
+              echo "Retry $attempt produced no JUnit report."
+              continue
+            fi
+            python3 "$merge" merge "$final" "$results" "$attempt"
+          done
+
+          rm -rf "$results"; mkdir -p "$(dirname "$results")"; cp -r "$final" "$results"
+          remaining=$(python3 "$merge" failed "$final" "$package")
+          if [[ -n "$remaining" ]]; then
+            echo "Still failing after $retries retries:"; tr ',' '\n' <<< "$remaining"
+            exit 1
+          fi
+          echo "All tests passed after retries."
+          EOF
+          chmod +x "$RUNNER_TEMP/run-with-retry.sh"
+
           cat > "$RUNNER_TEMP/run-shard.sh" <<'EOF'
           #!/usr/bin/env bash
           set -eo pipefail
@@ -230,8 +388,8 @@ jobs:
 
           tests=$(jq -r '.testsuite[] | select(.enabled == true) | .testCases[] | select(.enabled == true) | .name' "$suite" \
             | tr ', ' '\n\n' | grep -v '^$' \
-            | awk -v n="$num_shards" -v i="$shard_index" -v p="$package" \
-                '(NR - 1) % n == i { printf "%s%s.%s", (c++ ? "," : ""), p, $0 }')
+            | awk -v n="$num_shards" -v i="$shard_index" \
+                '(NR - 1) % n == i { printf "%s%s", (c++ ? "," : ""), $0 }')
 
           if [[ -z "$tests" ]]; then
             echo "No enabled tests assigned to shard $shard_index of $num_shards — nothing to run."
@@ -241,12 +399,14 @@ jobs:
           echo "Shard $shard_index of $num_shards runs $(tr ',' '\n' <<< "$tests" | wc -l) test(s):"
           tr ',' '\n' <<< "$tests"
 
-          ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$tests" --continue --stacktrace
+          exec "$RUNNER_TEMP/run-with-retry.sh" "$package" "$tests"
           EOF
           chmod +x "$RUNNER_TEMP/run-shard.sh"
 
       - name: Execute Staging Instrument on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options == '' }}"
+        env:
+          ANDROID_TEST_RETRIES: ${{ inputs.test-retries || '2' }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.version }}
@@ -269,6 +429,8 @@ jobs:
 
       - name: Execute custom instrument test ${{ inputs.instrument_options }} on API ${{ matrix.version }}
         if: "${{ inputs.instrument_options != '' }}"
+        env:
+          ANDROID_TEST_RETRIES: ${{ inputs.test-retries || '2' }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.version }}
@@ -287,8 +449,7 @@ jobs:
           script: |
             adb shell wm size
             adb shell wm density
-            chmod +x ./scripts/run-tests.sh
-            ./scripts/run-tests.sh --instrument-options=${{ inputs.instrument_options }}
+            "$RUNNER_TEMP/run-with-retry.sh" com.record360.app.test.tests "${{ inputs.instrument_options }}"
 
       - name: Diagnose runner resources
         if: failure()
