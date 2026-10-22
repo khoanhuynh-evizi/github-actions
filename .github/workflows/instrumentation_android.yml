@@ -49,6 +49,14 @@ on:
         required: false
         type: string
         default: '2'
+      note:
+        description: 'Note shown on the Google Chat report card (optional)'
+        required: false
+        type: string
+      build-version:
+        description: 'App build version under test, shown in the Allure report (e.g., 4.30.1 (1234))'
+        required: false
+        type: string
 env:
   PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
 
@@ -524,6 +532,11 @@ jobs:
           echo "DEVICE_ARCH=${{ inputs.device-arch || 'x86_64' }}" >> $GITHUB_ENV
           echo "DEVICE_TARGET=${{ inputs.device-target || 'google_apis' }}" >> $GITHUB_ENV
           echo "DEVICE=${{ inputs.device-profile || 'pixel_7' }} · API ${{ inputs.sdk-version || '35' }} (${{ inputs.device-arch || 'x86_64' }}/${{ inputs.device-target || 'google_apis' }})" >> $GITHUB_ENV
+          # Free text from the run form — passed via env, not inlined, so it
+          # can't inject shell; newlines dropped so it stays one env line.
+          echo "BUILD_VERSION=$(tr -d '\r\n' <<< "$BUILD_VERSION_INPUT")" >> $GITHUB_ENV
+        env:
+          BUILD_VERSION_INPUT: ${{ inputs.build-version }}
         shell: bash
 
       - name: Compute test duration
@@ -1087,6 +1100,8 @@ jobs:
               "Device Profile": v("DEVICE_PROFILE"),
               "Device Arch": v("DEVICE_ARCH"),
               "Device Target": v("DEVICE_TARGET"),
+              // Only when a build version was entered for the run
+              ...(v("BUILD_VERSION") ? { "Build Version": v("BUILD_VERSION") } : {}),
             },
             categories: {
               rules: [
@@ -1252,7 +1267,7 @@ jobs:
           fi
 
           export STATUS STATUS_COLOR STATUS_ICON
-          export DATE_TIME="$(date '+%d/%m/%Y %H:%M:%S')"
+          export DATE_TIME="$(TZ=Asia/Ho_Chi_Minh date '+%d/%m/%Y %H:%M:%S')"
           export REPORT_URL="https://360-staging-allure-report.s3.amazonaws.com/android/index.html"
           # Deep-link to the sheet tab this run actually created (if any) —
           # a bare spreadsheet URL opens whatever sheet was last active for
@@ -1273,6 +1288,8 @@ jobs:
           export BRANCH_CODE="${{ github.event.inputs.submodule-branch }}"
 
           python3 - <<'PYEOF'
+          import html
+          import json
           import os
           from string import Template
 
@@ -1281,7 +1298,14 @@ jobs:
 
           keys = ["STATUS_ICON", "DATE_TIME", "REPORT_URL", "GSHEET_URL", "PASSED", "PASS_RATE",
                   "FAILED", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH_AUTO", "BRANCH_CODE", "STATUS_COLOR", "STATUS"]
-          payload = tpl.safe_substitute({k: os.environ.get(k, "") for k in keys})
+          values = {k: os.environ.get(k, "") for k in keys}
+          # Free text typed into the run form — escape it for the card's HTML
+          # and for the JSON string it's substituted into, so quotes, <, & or
+          # newlines can't break the payload.
+          note = os.environ.get("NOTE", "").strip() or "-"
+          values["NOTE"] = json.dumps(html.escape(note).replace("\n", "<br>"))[1:-1]
+          payload = tpl.safe_substitute(values)
+          json.loads(payload)  # fail here, not at the webhook, if it's malformed
 
           with open("payload.json", "w") as f:
               f.write(payload)
@@ -1290,6 +1314,8 @@ jobs:
           curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
             -H "Content-Type: application/json" \
             -d @payload.json
+        env:
+          NOTE: ${{ inputs.note }}
         shell: bash
 
       - name: Upload merged results
