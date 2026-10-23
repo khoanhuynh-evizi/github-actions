@@ -58,12 +58,13 @@ on:
         description: 'Shards (parallel jobs per suite)'
         required: true
         type: choice
-        default: '4'
+        default: '1'
         options:
           - '1'
           - '2'
           - '4'
           - '8'
+          - '16'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.actor }}
