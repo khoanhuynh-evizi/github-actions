@@ -246,8 +246,8 @@ jobs:
         CAPABILITIES: ${{ needs.prepare-matrix.outputs.capabilities }}
         MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ needs.prepare-matrix.outputs.dashboard_url || secrets.R360_DASHBOARD_URL }}
-        API_URL: ${{ needs.prepare-matrix.outputs.api_url || secrets.API_URL }}
-        GRAPHQL_ENDPOINT: ${{ needs.prepare-matrix.outputs.graphql_endpoint || secrets.GRAPHQL_ENDPOINT }}
+        R360_API_URL: ${{ needs.prepare-matrix.outputs.api_url || secrets.API_URL }}
+        R360_GRAPHQL_ENDPOINT: ${{ needs.prepare-matrix.outputs.graphql_endpoint || secrets.GRAPHQL_ENDPOINT }}
 
     # A shard writes its results to wdio/reports/shard-<n>; uploading that folder's contents keeps
     # the files flat, so the report job can download every shard of a suite into one folder.
