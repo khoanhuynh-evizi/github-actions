@@ -54,17 +54,16 @@ on:
           - 'Chrome (mobile)'
           - 'Firefox'
           - 'Edge'
-      maxInstances:
-        description: 'Max instances'
+      shards:
+        description: 'Shards (parallel jobs per suite)'
         required: true
         type: choice
-        default: '2'
+        default: '4'
         options:
           - '1'
           - '2'
-          - '3'
           - '4'
-          - '5'
+          - '8'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.actor }}
@@ -117,8 +116,8 @@ jobs:
               ;;
           esac
 
-          # Number of parallel jobs (runners) every suite is split into
-          SHARDS=4
+          # Number of parallel jobs (runners) every suite is split into; 4 when no input is given (e.g. scheduled runs)
+          SHARDS="${{ github.event.inputs.shards || '4' }}"
 
           case "$BROWSER" in
             "Chrome (tablet)") CAPABILITIES=chrome-tablet ;;
@@ -176,6 +175,7 @@ jobs:
           echo "Run mode: $RUN_MODE"
           echo "Run matrix: $RUN_MATRIX"
           echo "Report matrix: $REPORT_MATRIX"
+          echo "Shards per suite: $SHARDS"
           echo "Max parallel: $MAX_PARALLEL"
           echo "Browser: $BROWSER -> CAPABILITIES=$CAPABILITIES"
           echo "Environment: ${ENVIRONMENT:-<secrets>} -> $DASHBOARD_URL | $API_URL | $GRAPHQL_ENDPOINT"
@@ -243,7 +243,7 @@ jobs:
         ${{ matrix.runCommand }} 2>&1 | tee ../specs-reporter-${{ matrix.shard }}.log
       env:
         CAPABILITIES: ${{ needs.prepare-matrix.outputs.capabilities }}
-        MAX_INSTANCES: ${{ github.event.inputs.maxInstances || '2' }}
+        MAX_INSTANCES: 2
         R360_DASHBOARD_URL: ${{ needs.prepare-matrix.outputs.dashboard_url || secrets.R360_DASHBOARD_URL }}
         API_URL: ${{ needs.prepare-matrix.outputs.api_url || secrets.API_URL }}
         GRAPHQL_ENDPOINT: ${{ needs.prepare-matrix.outputs.graphql_endpoint || secrets.GRAPHQL_ENDPOINT }}
