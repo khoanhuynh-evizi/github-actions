@@ -19,8 +19,10 @@ on:
         type: choice
         default: 'dashboard-t'
         options:
-          - 'Gamma'
           - 'Alpha'
+          - 'Beta'
+          - 'Gamma'
+          - 'Delta'
           - 'Epsilon'
           - 'Zeta'
           - 'dashboard-t'
