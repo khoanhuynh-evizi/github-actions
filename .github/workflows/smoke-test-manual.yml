@@ -344,8 +344,9 @@ jobs:
     - name: WDIO Test Checker
       if: always()
       run: |
-        if grep -qE "[0-9]+\s+failed" specs-reporter.log; then
-          exit 1
+        if grep -Eq '[1-9][0-9]*[[:space:]]+failed' specs-reporter.log; then
+            echo "There are failed tests in the WDIO report."
+            exit 1
         fi
 
     - name: Upload spec reporter log
