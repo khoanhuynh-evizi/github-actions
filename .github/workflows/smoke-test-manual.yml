@@ -344,8 +344,10 @@ jobs:
     - name: WDIO Test Checker
       if: always()
       run: |
-        if grep -Eq '[1-9][0-9]*[[:space:]]+failed' specs-reporter.log; then
-            echo "There are failed tests in the WDIO report."
+        # Only the "Spec Files:" summary lines count — app/cleanup logs can also contain "<n> failed"
+        if grep 'Spec Files:' specs-reporter.log | grep -Eq '[1-9][0-9]*[[:space:]]+failed'; then
+            echo "There are failed tests in the WDIO report:"
+            grep 'Spec Files:' specs-reporter.log
             exit 1
         fi
 
