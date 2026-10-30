@@ -101,7 +101,7 @@ jobs:
           # Empty when no environment is selected (e.g. scheduled runs) so the
           # test step falls back to the repository secrets.
           case "$ENVIRONMENT" in
-            Gamma|Alpha|Epsilon|Zeta)
+            Gamma|Alpha|Epsilon|Zeta|Delta|Beta)
               ENV_PREFIX=$(echo "$ENVIRONMENT" | tr '[:upper:]' '[:lower:]')
               DASHBOARD_URL="https://${ENV_PREFIX}-dashboard-s.record360.com"
               API_URL="https://${ENV_PREFIX}-s.record360.com/api"
