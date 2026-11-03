@@ -19,8 +19,10 @@ on:
         type: choice
         default: 'dashboard-t'
         options:
-          - 'Gamma'
           - 'Alpha'
+          - 'Beta'
+          - 'Gamma'
+          - 'Delta'
           - 'Epsilon'
           - 'Zeta'
           - 'dashboard-t'
@@ -99,7 +101,7 @@ jobs:
           # Empty when no environment is selected (e.g. scheduled runs) so the
           # test step falls back to the repository secrets.
           case "$ENVIRONMENT" in
-            Gamma|Alpha|Epsilon|Zeta)
+            Gamma|Alpha|Epsilon|Zeta|Delta|Beta)
               ENV_PREFIX=$(echo "$ENVIRONMENT" | tr '[:upper:]' '[:lower:]')
               DASHBOARD_URL="https://${ENV_PREFIX}-dashboard-s.record360.com"
               API_URL="https://${ENV_PREFIX}-s.record360.com/api"
@@ -129,7 +131,7 @@ jobs:
           esac
 
           # "shards" splits a suite into that many test jobs; each one appends --shard=<i>/<shards>
-          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\"","shards":'"$SHARDS"'}'
+          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:run-config --config ./run-configs/smoke.json","shards":'"$SHARDS"'}'
           SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\"","shards":'"$SHARDS"'}'
           REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json","shards":'"$SHARDS"'}'
           REGRESSION_FULL='{"suite":"regression-full","suiteType":"Regression (Full)","suiteLabel":"Regression (Full) Test","runCommand":"yarn test:local --suite=\"Regression Test\"","shards":'"$SHARDS"'}'
@@ -342,8 +344,11 @@ jobs:
     - name: WDIO Test Checker
       if: always()
       run: |
-        if grep -qE "[0-9]+\s+failed" specs-reporter.log; then
-          exit 1
+        # Only the "Spec Files:" summary lines count — app/cleanup logs can also contain "<n> failed"
+        if grep 'Spec Files:' specs-reporter.log | grep -Eq '[1-9][0-9]*[[:space:]]+failed'; then
+            echo "There are failed tests in the WDIO report:"
+            grep 'Spec Files:' specs-reporter.log
+            exit 1
         fi
 
     - name: Upload spec reporter log
