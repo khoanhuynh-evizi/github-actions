@@ -101,7 +101,7 @@ jobs:
           # Empty when no environment is selected (e.g. scheduled runs) so the
           # test step falls back to the repository secrets.
           case "$ENVIRONMENT" in
-            Gamma|Alpha|Epsilon|Zeta)
+            Gamma|Alpha|Epsilon|Zeta|Delta|Beta)
               ENV_PREFIX=$(echo "$ENVIRONMENT" | tr '[:upper:]' '[:lower:]')
               DASHBOARD_URL="https://${ENV_PREFIX}-dashboard-s.record360.com"
               API_URL="https://${ENV_PREFIX}-s.record360.com/api"
@@ -131,7 +131,7 @@ jobs:
           esac
 
           # "shards" splits a suite into that many test jobs; each one appends --shard=<i>/<shards>
-          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\"","shards":'"$SHARDS"'}'
+          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:run-config --config ./run-configs/smoke.json","shards":'"$SHARDS"'}'
           SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\"","shards":'"$SHARDS"'}'
           REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json","shards":'"$SHARDS"'}'
           REGRESSION_FULL='{"suite":"regression-full","suiteType":"Regression (Full)","suiteLabel":"Regression (Full) Test","runCommand":"yarn test:local --suite=\"Regression Test\"","shards":'"$SHARDS"'}'
@@ -1084,6 +1084,7 @@ jobs:
         export TICKETS="${TICKETS:-—}"
 
         envsubst < .github/googleChat/dashboard-card.json > payload.json
+
 
         curl -X POST "https://chat.googleapis.com/v1/spaces/AAQAdwKFmnc/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=I3I32rN99B0lF6PnZXvRA6M_QOHyivbzUdLrGdfA-Dk" \
           -H "Content-Type: application/json" \
