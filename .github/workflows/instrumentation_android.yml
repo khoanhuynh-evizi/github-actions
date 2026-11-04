@@ -92,6 +92,11 @@ jobs:
             arch: ${{ inputs.device-arch || 'x86_64' }}
             target: ${{ inputs.device-target || 'google_apis' }}
             profile: ${{ inputs.device-profile || 'pixel_7' }}
+    env:
+      # Shared by the test steps' emulator and by run-with-retry.sh, which restarts the emulator with the same
+      # AVD/options when it dies mid-run.
+      AVD_NAME: Nexus6_${{ matrix.version }}
+      EMULATOR_OPTIONS: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated -camera-front emulated
     steps:
       - name: Clean up workspace
         uses: jlumbroso/free-disk-space@main
@@ -229,19 +234,24 @@ jobs:
           EOF
           chmod +x "$RUNNER_TEMP/monitor.sh"
 
-      # Shared by the sharded full run and the custom instrument_options run: failed tests are rerun
-      # (ANDROID_TEST_RETRIES times) and folded into the first run's JUnit XML before it is uploaded.
+      # Shared by the sharded full run and the custom instrument_options run: failed tests, and tests that never
+      # ran because the instrumentation/emulator died mid-run, are rerun (ANDROID_TEST_RETRIES times) and folded
+      # into the first run's JUnit XML before it is uploaded.
       - name: Create test run scripts
         run: |
           cat > "$RUNNER_TEMP/merge_retry.py" <<'PYEOF'
           #!/usr/bin/env python3
           """Retry helper for connectedAndroidTest JUnit XML.
 
-          failed <dir> <package>          print failed tests of the run in <dir> as comma separated class#method
-          merge  <final_dir> <retry_dir> <attempt>
+          failed  <dir> <package>          print failed tests of the run in <dir> as comma separated class#method
+          missing <dir> <package> <tests>  print the requested <tests> (comma separated, package-qualified class or
+                                           class#method) that have no testcase in the run in <dir> — they never ran,
+                                           e.g. the instrumentation crashed or the emulator died before reaching them
+          merge   <final_dir> <retry_dir> <attempt>
                                            fold a rerun into the full first-run report: a test that passed on the rerun
                                            loses its failure (and keeps a note), a test that failed again keeps the latest
-                                           failure. Rerun logcat files are copied next to the originals with a -retryN suffix.
+                                           failure, a test missing from the first run is added. Rerun logcat files are
+                                           copied next to the originals with a -retryN suffix.
           """
           import glob
           import os
@@ -278,11 +288,27 @@ jobs:
               print(",".join(dict.fromkeys(names)))
 
 
+          def cmd_missing(directory, package, tests):
+              seen = {(tc.get("classname", ""), tc.get("name", "")) for path in junit_files(directory)
+                      for _, tc in testcases(path)}
+              seen_classes = {classname for classname, _ in seen}
+              prefix = package + "."
+              names = []
+              for test in filter(None, (t.strip() for t in tests.split(","))):
+                  classname, _, method = test.partition("#")
+                  # A class entry (no #method) counts as run once any of its tests is in the report
+                  ran = (classname, method) in seen if method else classname in seen_classes
+                  if not ran:
+                      names.append(test[len(prefix):] if test.startswith(prefix) else test)
+              print(",".join(dict.fromkeys(names)))
+
+
           def cmd_merge(final_dir, retry_dir, attempt):
               retried = {}
               for path in junit_files(retry_dir):
                   for _, tc in testcases(path):
                       retried[(tc.get("classname"), tc.get("name"))] = tc
+              matched = set()
 
               for path in junit_files(final_dir):
                   tree = ET.parse(path)
@@ -290,7 +316,10 @@ jobs:
                   suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
                   for suite in suites:
                       for tc in suite.findall("testcase"):
-                          rerun = retried.get((tc.get("classname"), tc.get("name")))
+                          key = (tc.get("classname"), tc.get("name"))
+                          rerun = retried.get(key)
+                          if rerun is not None:
+                              matched.add(key)
                           if rerun is None or not is_failed(tc):
                               continue
                           for node in tc.findall("failure") + tc.findall("error"):
@@ -312,6 +341,28 @@ jobs:
                       suite.set("errors", str(errors))
                   tree.write(path, encoding="UTF-8", xml_declaration=True)
 
+              # Tests the first run never reached (instrumentation crash / emulator died) only exist in the rerun:
+              # add them to the first report file so they are counted like every other test.
+              added = [tc for key, tc in retried.items() if key not in matched]
+              final_files = junit_files(final_dir)
+              if added and final_files:
+                  path = final_files[0]
+                  tree = ET.parse(path)
+                  root = tree.getroot()
+                  suite = root.find("testsuite") if root.tag == "testsuites" else root
+                  for tc in added:
+                      out = tc.find("system-out")
+                      if out is None:
+                          out = ET.SubElement(tc, "system-out")
+                      out.text = ((out.text or "") + f"\nNot run in the first run; ran on retry {attempt}").strip()
+                      suite.append(tc)
+                  cases = suite.findall("testcase")
+                  suite.set("tests", str(len(cases)))
+                  suite.set("failures", str(sum(1 for tc in cases if tc.find("failure") is not None)))
+                  suite.set("errors", str(sum(1 for tc in cases if tc.find("error") is not None)))
+                  suite.set("skipped", str(sum(1 for tc in cases if tc.find("skipped") is not None)))
+                  tree.write(path, encoding="UTF-8", xml_declaration=True)
+
               # Keep the rerun logcats next to the first-run ones
               for src in glob.glob(os.path.join(retry_dir, "**", "logcat-*.txt"), recursive=True):
                   rel = os.path.relpath(src, retry_dir)
@@ -323,6 +374,8 @@ jobs:
           if __name__ == "__main__":
               if sys.argv[1] == "failed":
                   cmd_failed(sys.argv[2], sys.argv[3])
+              elif sys.argv[1] == "missing":
+                  cmd_missing(sys.argv[2], sys.argv[3], sys.argv[4])
               elif sys.argv[1] == "merge":
                   cmd_merge(sys.argv[2], sys.argv[3], sys.argv[4])
               else:
@@ -333,8 +386,10 @@ jobs:
           #!/usr/bin/env bash
           # usage: run-with-retry.sh <package> <tests>
           # <tests> are class or class#method names relative to <package>, separated by commas or spaces.
-          # Runs the tests, then reruns only the failed ones up to ANDROID_TEST_RETRIES times and folds the reruns into the
-          # first run's JUnit XML, so the upload / report steps keep reading app/build/outputs/*/connected as before.
+          # Runs the tests, then reruns the failed ones and the ones that never ran (instrumentation crash / emulator died
+          # mid-run) up to ANDROID_TEST_RETRIES times and folds the reruns into the first run's JUnit XML, so the upload /
+          # report steps keep reading app/build/outputs/*/connected as before. When the emulator is gone it is restarted
+          # (AVD_NAME + EMULATOR_OPTIONS from the step env) before the rerun.
           set -o pipefail
           package="$1"
           tests=$(tr ', ' '\n\n' <<< "$2" | grep -v '^$' | sed "s/^/$package./" | paste -sd, -)
@@ -342,10 +397,57 @@ jobs:
           results="app/build/outputs/androidTest-results/connected"
           final="$RUNNER_TEMP/connected-final"
           merge="$RUNNER_TEMP/merge_retry.py"
+          serial="emulator-5554"
+          restarts=0
 
           run_tests() {
             rm -rf "$results"
             ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$1" --continue --stacktrace
+          }
+
+          has_report() { [[ -n "$(find "$1" -name 'TEST-*.xml' 2>/dev/null)" ]]; }
+
+          device_ready() {
+            [[ "$(timeout 20 adb -s "$serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]
+          }
+
+          restart_emulator() {
+            if [[ -z "${AVD_NAME:-}" ]]; then
+              echo "AVD_NAME is not set, cannot restart the emulator."
+              return 1
+            fi
+            restarts=$((restarts + 1))
+            echo "::warning::Emulator $serial is not responding, restarting it (restart #$restarts)"
+            timeout 20 adb -s "$serial" emu kill >/dev/null 2>&1 || true
+            sleep 5
+            pkill -9 -f -- "-avd $AVD_NAME" || true
+            sleep 5
+            local log="$RUNNER_TEMP/emulator-restart-$restarts.log"
+            # EMULATOR_OPTIONS is a space separated option list, word splitting is intended
+            # shellcheck disable=SC2086
+            nohup "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/emulator/emulator" -avd "$AVD_NAME" -port 5554 $EMULATOR_OPTIONS > "$log" 2>&1 &
+            timeout 300 adb -s "$serial" wait-for-device || true
+            for _ in $(seq 1 120); do
+              device_ready && break
+              sleep 5
+            done
+            if ! device_ready; then
+              echo "Emulator did not boot after restart:"; tail -n 50 "$log"
+              return 1
+            fi
+            for setting in window_animation_scale transition_animation_scale animator_duration_scale; do
+              adb -s "$serial" shell settings put global "$setting" 0.0
+            done
+            adb -s "$serial" shell input keyevent 82 || true
+            echo "Emulator restarted."
+          }
+
+          ensure_device() { device_ready || restart_emulator; }
+
+          # Tests to rerun: failed ones plus requested ones missing from the report
+          pending_tests() {
+            { python3 "$merge" failed "$final" "$package"; python3 "$merge" missing "$final" "$package" "$tests"; } \
+              | tr ',' '\n' | grep -v '^$' | awk '!seen[$0]++' | paste -sd, -
           }
 
           if [[ -z "$tests" ]]; then
@@ -353,26 +455,50 @@ jobs:
             exit 0
           fi
 
+          # The tests this job was asked to run, so the report can tell tests that never ran apart from tests that passed
+          mkdir -p app/build/outputs
+          tr ',' '\n' <<< "$tests" > app/build/outputs/expected-tests.txt
+
           run_tests "$tests"; rc=$?
           if [[ $rc -eq 0 || "$retries" -le 0 ]]; then exit $rc; fi
-          if [[ -z "$(find "$results" -name 'TEST-*.xml' 2>/dev/null)" ]]; then
-            echo "No JUnit report was produced, not retrying."
-            exit $rc
+          if ! has_report "$results"; then
+            if device_ready; then
+              echo "No JUnit report was produced, not retrying."
+              exit $rc
+            fi
+            # The emulator died before any test reported (not a build error): restart it and run everything once more
+            echo "No JUnit report was produced and the emulator is gone, rerunning all tests on a restarted emulator."
+            restart_emulator || exit $rc
+            run_tests "$tests"; rc=$?
+            if [[ $rc -eq 0 ]]; then exit 0; fi
+            if ! has_report "$results"; then
+              echo "No JUnit report was produced, not retrying."
+              exit $rc
+            fi
           fi
 
           rm -rf "$final"; cp -r "$results" "$final"
-          if [[ -z "$(python3 "$merge" failed "$final" "$package")" ]]; then
-            # Gradle failed without a failed test in the report (build error, instrumentation crash): don't hide it
-            echo "Run failed without a failed test in the report, not retrying."
+          if [[ -z "$(pending_tests)" ]]; then
+            # Gradle failed without a failed or missing test in the report (e.g. a build error): don't hide it
+            echo "Run failed without a failed or missing test in the report, not retrying."
             exit $rc
           fi
 
           for attempt in $(seq 1 "$retries"); do
-            failed=$(python3 "$merge" failed "$final" "$package")
-            [[ -z "$failed" ]] && break
-            echo "Retry $attempt of $retries for:"; tr ',' '\n' <<< "$failed"
-            run_tests "$(tr ',' '\n' <<< "$failed" | sed "s/^/$package./" | paste -sd, -)"
-            if [[ -z "$(find "$results" -name 'TEST-*.xml' 2>/dev/null)" ]]; then
+            missing=$(python3 "$merge" missing "$final" "$package" "$tests")
+            pending=$(pending_tests)
+            [[ -z "$pending" ]] && break
+            if [[ -n "$missing" ]]; then
+              echo "$(tr ',' '\n' <<< "$missing" | wc -l | tr -d ' ') test(s) never ran (instrumentation crash or emulator died):"
+              tr ',' '\n' <<< "$missing"
+            fi
+            if ! ensure_device; then
+              echo "Emulator could not be restarted, giving up on retries."
+              break
+            fi
+            echo "Retry $attempt of $retries for:"; tr ',' '\n' <<< "$pending"
+            run_tests "$(tr ',' '\n' <<< "$pending" | sed "s/^/$package./" | paste -sd, -)"
+            if ! has_report "$results"; then
               echo "Retry $attempt produced no JUnit report."
               continue
             fi
@@ -381,10 +507,14 @@ jobs:
 
           rm -rf "$results"; mkdir -p "$(dirname "$results")"; cp -r "$final" "$results"
           remaining=$(python3 "$merge" failed "$final" "$package")
+          missing=$(python3 "$merge" missing "$final" "$package" "$tests")
           if [[ -n "$remaining" ]]; then
             echo "Still failing after $retries retries:"; tr ',' '\n' <<< "$remaining"
-            exit 1
           fi
+          if [[ -n "$missing" ]]; then
+            echo "Never ran after $retries retries:"; tr ',' '\n' <<< "$missing"
+          fi
+          if [[ -n "$remaining" || -n "$missing" ]]; then exit 1; fi
           echo "All tests passed after retries."
           EOF
           chmod +x "$RUNNER_TEMP/run-with-retry.sh"
@@ -421,14 +551,14 @@ jobs:
           target: ${{ matrix.target }}
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
-          avd-name: Nexus6_${{ matrix.version }}
+          avd-name: ${{ env.AVD_NAME }}
           cores: 4
           sdcard-path-or-size: 1024MB
           ram-size: 4096M
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated -camera-front emulated
+          emulator-options: ${{ env.EMULATOR_OPTIONS }}
           disable-animations: true
           script: |
             adb shell wm size
@@ -445,14 +575,14 @@ jobs:
           target: ${{ matrix.target }}
           profile: ${{ matrix.profile }}
           arch: ${{ matrix.arch }}
-          avd-name: Nexus6_${{ matrix.version }}
+          avd-name: ${{ env.AVD_NAME }}
           cores: 4
           sdcard-path-or-size: 2000M
           ram-size: 4096M
           heap-size: 512M
           emulator-boot-timeout: 12000
           force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated -camera-front emulated
+          emulator-options: ${{ env.EMULATOR_OPTIONS }}
           disable-animations: true
           script: |
             adb shell wm size
@@ -471,8 +601,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-suite-${{ matrix.version }}-shard-${{ matrix.shard }}
+          # expected-tests.txt (written by run-with-retry.sh) lists the tests this shard was asked to run, so the
+          # report can count the ones that never ran. All paths share the app/build/ root, so the artifact layout
+          # stays outputs/... + reports/...
           path: |
             app/build/outputs/*/connected/*
+            app/build/outputs/expected-tests.txt
             app/build/reports/androidTests/connected/**
 
       - name: Generate reports on API ${{ matrix.version }}
@@ -655,11 +789,85 @@ jobs:
                           "trace": ((node.text or "").strip() if node is not None else ""),
                       })
 
+          # -------------------- TESTS THAT NEVER RAN --------------------
+          # The JUnit XML only lists tests the instrumentation reached. When it
+          # crashes or the emulator dies mid-run, the rest of that shard's tests
+          # are simply absent, and the totals silently shrink. Compare against
+          # what each shard was asked to run and report the gap as "not run".
+          PACKAGE       = os.environ["TEST_PACKAGE"]
+          NUM_SHARDS    = int(os.environ.get("NUM_SHARDS") or "1")
+          SDK_VERSION   = os.environ.get("SDK_VERSION", "")
+          TEST_RUN_JSON = os.environ["TEST_RUN_JSON"]
+
+          expected = {}  # package-qualified class or class#method -> shard folder
+          for path in sorted(glob.glob("results/*/outputs/expected-tests.txt")):
+              shard = path.split(os.sep)[1]
+              with open(path) as f:
+                  for line in f:
+                      if line.strip():
+                          expected.setdefault(line.strip(), shard)
+          shards_with_list = {v for v in expected.values()}
+
+          # A shard whose job died before uploading its artifact (runner lost)
+          # left no expected-tests.txt: rebuild its list the same way
+          # run-shard.sh does (enabled tests, round robin). Only for the
+          # sharded full run; a custom instrument_options run has no
+          # testRun.json list. testRun.json here is the main-branch copy, so
+          # it can differ from a Firebase-downloaded one (useUrlTestData).
+          if NUM_SHARDS > 1:
+              enabled = []
+              try:
+                  with open(TEST_RUN_JSON) as f:
+                      suite_json = json.load(f)
+                  for feature in suite_json.get("testsuite", []):
+                      if feature.get("enabled") is not True:
+                          continue
+                      for tc in feature.get("testCases", []):
+                          if tc.get("enabled") is True:
+                              enabled.extend(n for n in tc["name"].replace(",", " ").split() if n)
+              except FileNotFoundError:
+                  print(f"⚠️ {TEST_RUN_JSON} not found — can't rebuild the test list of shards without an artifact")
+              for i in range(NUM_SHARDS):
+                  shard = f"test-suite-{SDK_VERSION}-shard-{i}"
+                  if shard in shards_with_list:
+                      continue
+                  assigned = [n for idx, n in enumerate(enabled) if idx % NUM_SHARDS == i]
+                  if assigned:
+                      print(f"⚠️ {shard} uploaded no expected-tests.txt — using its {len(assigned)} test(s) from {TEST_RUN_JSON}")
+                  for n in assigned:
+                      expected.setdefault(f"{PACKAGE}.{n}", shard)
+
+          seen = {(t["classname"], t["name"]) for t in tests}
+          seen_classes = {c for c, _ in seen}
+          not_run_by_shard = {}
+          for full, shard in expected.items():
+              classname, _, method = full.partition("#")
+              # A class entry (no #method) counts as run once any of its tests is in the report
+              if (classname, method) in seen if method else classname in seen_classes:
+                  continue
+              not_run_by_shard.setdefault(shard, []).append(full)
+              tests.append({
+                  "classname": classname,
+                  "name": method or classname.rsplit(".", 1)[-1],
+                  "time": "0",
+                  "start_ms": None,
+                  "status": "broken",
+                  "not_run": True,
+                  "message": f"Not run: the instrumentation run on {shard} ended before reaching this test "
+                             f"(instrumentation crash or emulator died), and the retries didn't run it either.",
+                  "trace": "",
+              })
+          for shard, names in sorted(not_run_by_shard.items()):
+              print(f"❌ {shard}: {len(names)} test(s) never ran:")
+              for n in names:
+                  print(f"   - {n}")
+
           with open("tests.json", "w") as f:
               json.dump(tests, f)
 
+          not_run = sum(1 for t in tests if t.get("not_run"))
           passed  = sum(1 for t in tests if t["status"] == "passed")
-          failed  = sum(1 for t in tests if t["status"] in ("failed", "broken"))
+          failed  = sum(1 for t in tests if t["status"] in ("failed", "broken") and not t.get("not_run"))
           skipped = sum(1 for t in tests if t["status"] == "skipped")
           total   = len(tests)
           pass_rate = round(passed * 100 / total, 1) if total else 0.0
@@ -667,14 +875,20 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a") as f:
               f.write(f"SUITE_PASSED={passed}\n")
               f.write(f"SUITE_FAILED={failed}\n")
+              f.write(f"SUITE_NOT_RUN={not_run}\n")
               f.write(f"SUITE_SKIPPED={skipped}\n")
               f.write(f"SUITE_TOTAL={total}\n")
               f.write(f"SUITE_PASS_RATE={pass_rate}\n")
 
-          print(f"Reporting counts → Passed={passed} Failed={failed} Skipped={skipped} Total={total} PassRate={pass_rate}%")
+          print(f"Reporting counts → Passed={passed} Failed={failed} NotRun={not_run} Skipped={skipped} Total={total} PassRate={pass_rate}%")
           if total == 0:
               print("❌ No JUnit XML tests parsed — the run likely crashed before producing a report")
           PYEOF
+        env:
+          TEST_RUN_JSON: ${{ env.PATH_TEST_SUITE }}
+          TEST_PACKAGE: com.record360.app.test.tests
+          # Must match the test job's shard matrix: 4 shards for the full run, 1 for a custom instrument_options run.
+          NUM_SHARDS: ${{ inputs.instrument_options == '' && '4' || '1' }}
         shell: bash
 
       # -------------------- CONVERT JUNIT XML → ALLURE RESULTS --------------------
@@ -771,7 +985,8 @@ jobs:
       # colored chips) — reuses tests.json from the parse step above instead
       # of re-reading the XML/xcresult.
       - name: Export Failed Test Cases to Google Sheets
-        if: always() && env.SUITE_FAILED != '' && env.SUITE_FAILED != '0'
+        # Not-run tests are in tests.json as broken, so they are exported with the failures.
+        if: always() && ((env.SUITE_FAILED != '' && env.SUITE_FAILED != '0') || (env.SUITE_NOT_RUN != '' && env.SUITE_NOT_RUN != '0'))
         run: |
           python3 -m pip install --quiet google-auth google-auth-httplib2 google-api-python-client
 
@@ -1257,7 +1472,7 @@ jobs:
           # if: always()), so real PASSED/FAILED signal comes from the
           # SUITE_* counts set by the parse step above.
           if [ -n "${SUITE_TOTAL:-}" ] && [ "${SUITE_TOTAL:-0}" != "0" ]; then
-            if [ "${SUITE_FAILED:-0}" = "0" ]; then
+            if [ "${SUITE_FAILED:-0}" = "0" ] && [ "${SUITE_NOT_RUN:-0}" = "0" ]; then
               STATUS="PASSED"; STATUS_COLOR="#0F9D58"; STATUS_ICON="✅"
             else
               STATUS="FAILED"; STATUS_COLOR="#DB4437"; STATUS_ICON="❌"
@@ -1280,6 +1495,7 @@ jobs:
           export PASSED="${SUITE_PASSED:-0}"
           export FAILED="${SUITE_FAILED:-0}"
           export SKIPPED="${SUITE_SKIPPED:-0}"
+          export NOT_RUN="${SUITE_NOT_RUN:-0}"
           export TOTAL="${SUITE_TOTAL:-0}"
           export PASS_RATE="${SUITE_PASS_RATE:-0}"
           export DURATION="${TEST_DURATION:-N/A}"
@@ -1297,7 +1513,7 @@ jobs:
               tpl = Template(f.read())
 
           keys = ["STATUS_ICON", "DATE_TIME", "REPORT_URL", "GSHEET_URL", "PASSED", "PASS_RATE",
-                  "FAILED", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH_AUTO", "BRANCH_CODE", "STATUS_COLOR", "STATUS"]
+                  "FAILED", "NOT_RUN", "SKIPPED", "TOTAL", "DURATION", "DEVICE", "BRANCH_AUTO", "BRANCH_CODE", "STATUS_COLOR", "STATUS"]
           values = {k: os.environ.get(k, "") for k in keys}
           # Free text typed into the run form — escape it for the card's HTML
           # and for the JSON string it's substituted into, so quotes, <, & or
