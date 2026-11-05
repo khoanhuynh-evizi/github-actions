@@ -78,6 +78,10 @@ jobs:
 
   test:
     runs-on: ${{ inputs.os-version || 'ubuntu-latest' }}
+    # Without this a hung step holds the runner for GitHub's 6h job limit. A shard of the full run is ~1/4 of the
+    # ~4h suite plus retries, so 4h is a generous ceiling; a custom instrument_options subset runs unsharded and
+    # keeps the 6h maximum.
+    timeout-minutes: ${{ inputs.instrument_options == '' && 240 || 360 }}
     strategy:
       # One shard failing must not cancel the others still running.
       fail-fast: false
@@ -193,8 +197,10 @@ jobs:
           kvm-ok || echo "KVM not available"
           ls -la /dev/kvm || echo "KVM device not found"
 
+      # Restore and save are split (instead of actions/cache) so the AVD is only cached when the snapshot
+      # generation below actually succeeded — never a half-written snapshot from a timed-out run.
       - name: AVD cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         id: avd-cache
         with:
           path: |
@@ -202,8 +208,14 @@ jobs:
             ~/.android/adb*
           key: avd-${{ matrix.version }}-${{ matrix.os }}-${{ matrix.target }}-4c-4g-cam2-audio
 
+      # The emulator saves its snapshot on shutdown, and that save can hang after "emu kill" — the action then waits
+      # on the emulator process forever (one shard sat here until the 6h job limit). Cap it and fall back to a
+      # cold boot in the test step instead of losing the whole shard.
       - name: Create AVD and generate snapshot for caching
+        id: avd-gen
         if: steps.avd-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 30
+        continue-on-error: true
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.version }}
@@ -220,6 +232,30 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated -camera-front emulated -no-snapshot-load
           disable-animations: true
           script: echo "Generated AVD snapshot for caching."
+
+      - name: Save AVD cache
+        if: steps.avd-cache.outputs.cache-hit != 'true' && steps.avd-gen.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: ${{ steps.avd-cache.outputs.cache-primary-key }}
+
+      # The hung emulator outlives the timed-out step and leaves a partial snapshot plus AVD lock files behind,
+      # which would make the test step's emulator refuse to start ("another emulator instance is running").
+      - name: Clean up after failed snapshot generation
+        if: steps.avd-cache.outputs.cache-hit != 'true' && steps.avd-gen.outcome != 'success'
+        run: |
+          echo "::warning::AVD snapshot generation failed or timed out; the test step will cold-boot the emulator and the AVD is not cached."
+          timeout 20 adb -s emulator-5554 emu kill >/dev/null 2>&1 || true
+          pkill -9 -f -- "-avd $AVD_NAME" || true
+          pkill -9 -f "qemu-system-" || true
+          timeout 20 adb kill-server >/dev/null 2>&1 || true
+          avd_dir="$HOME/.android/avd/$AVD_NAME.avd"
+          rm -rf "$avd_dir/snapshots"
+          rm -f "$avd_dir"/*.lock
+          ls -la "$avd_dir" || echo "AVD directory not found; the test step will create it."
 
       # Logs host RAM/swap/disk every 2 minutes during the test run, to
       # diagnose the runner dying ~2h in with no error in the test output.
@@ -1527,7 +1563,7 @@ jobs:
               f.write(payload)
           PYEOF
 
-          curl -X POST "${{ secrets.GOOGLE_CHAT_WEBHOOK }}" \
+          curl -X POST "${{ secrets.TEST_WEBHOOK }}" \
             -H "Content-Type: application/json" \
             -d @payload.json
         env:
