@@ -191,11 +191,21 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # Purely informational, so it must not depend on the network: installing cpu-checker (kvm-ok) via apt failed
+      # the whole job when the runner's DNS was briefly down. /dev/kvm being present and writable is what the
+      # emulator actually needs.
       - name: Check KVM availability
         run: |
-          sudo apt-get install -y cpu-checker
-          kvm-ok || echo "KVM not available"
-          ls -la /dev/kvm || echo "KVM device not found"
+          if [ -e /dev/kvm ]; then
+            ls -la /dev/kvm
+            if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+              echo "KVM available"
+            else
+              echo "::warning::/dev/kvm exists but is not accessible to $(id -un); the emulator will run without acceleration or fail to start."
+            fi
+          else
+            echo "::warning::KVM device not found; the x86_64 emulator needs hardware acceleration."
+          fi
 
       # Restore and save are split (instead of actions/cache) so the AVD is only cached when the snapshot
       # generation below actually succeeded — never a half-written snapshot from a timed-out run.
