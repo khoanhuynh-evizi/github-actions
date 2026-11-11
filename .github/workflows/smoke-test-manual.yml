@@ -131,7 +131,7 @@ jobs:
           esac
 
           # "shards" splits a suite into that many test jobs; each one appends --shard=<i>/<shards>
-          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:run-config --config ./run-configs/smoke.json","shards":'"$SHARDS"'}'
+          SMOKE='{"suite":"smoke","suiteType":"Smoke","suiteLabel":"Smoke Test","runCommand":"yarn test:local --suite=\"Smoke Test\"","shards":'"$SHARDS"'}'
           SMOKE_LITE='{"suite":"smoke-lite","suiteType":"Smoke Lite","suiteLabel":"Smoke Lite Test","runCommand":"yarn test:local --suite=\"Smoke Lite Test\"","shards":'"$SHARDS"'}'
           REGRESSION='{"suite":"regression","suiteType":"Regression","suiteLabel":"Regression Test","runCommand":"yarn test:run-config --config ./run-configs/regression.json","shards":'"$SHARDS"'}'
           REGRESSION_FULL='{"suite":"regression-full","suiteType":"Regression (Full)","suiteLabel":"Regression (Full) Test","runCommand":"yarn test:local --suite=\"Regression Test\"","shards":'"$SHARDS"'}'
