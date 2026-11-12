@@ -45,6 +45,7 @@ on:
           - 'Only (Full) Regression'
           - 'Only Sanity'
           - 'Only Feature'
+          - 'Only Test'
       browser:
         description: 'Browser'
         required: true
@@ -137,6 +138,7 @@ jobs:
           REGRESSION_FULL='{"suite":"regression-full","suiteType":"Regression (Full)","suiteLabel":"Regression (Full) Test","runCommand":"yarn test:local --suite=\"Regression Test\"","shards":'"$SHARDS"'}'
           FEATURE='{"suite":"feature","suiteType":"Feature","suiteLabel":"Feature Test","runCommand":"yarn test:run-config --config ./run-configs/feature.json","shards":'"$SHARDS"'}'
           SANITY='{"suite":"sanity","suiteType":"Sanity","suiteLabel":"Sanity Test","runCommand":"yarn test:run-config --config ./run-configs/sanity.json","shards":'"$SHARDS"'}'
+          TEST='{"suite":"test","suiteType":"Test","suiteLabel":"Test","runCommand":"yarn test:run-config --config ./run-configs/test.json","shards":'"$SHARDS"'}'
 
           # Every suite is sharded now, so cap concurrency at $SHARDS regardless of how
           # many suites are selected — a steady pool of runners instead of spiking with
@@ -165,8 +167,11 @@ jobs:
             "Only Feature")
               MATRIX="[$FEATURE]"
               ;;
+            "Only Test")
+              MATRIX="[$TEST]"
+              ;;
             *)
-              MATRIX="[$SMOKE,$REGRESSION,$SANITY,$FEATURE]"
+              MATRIX="[$SMOKE,$REGRESSION,$SANITY,$FEATURE,$TEST]"
               ;;
           esac
 
