@@ -57,6 +57,11 @@ on:
         description: 'App build version under test, shown in the Allure report (e.g., 4.30.1 (1234))'
         required: false
         type: string
+      serial-suites:
+        description: 'Comma-separated testRun.json suites that share a one-device-only login and must run on the same shard (empty spreads them out)'
+        required: false
+        type: string
+        default: 'Decisiv,Support Log'
 env:
   PATH_TEST_SUITE: app/src/androidTest/assets/testRun.json
 
@@ -570,10 +575,31 @@ jobs:
           set -eo pipefail
           package="$1"; suite="$2"; num_shards="$3"; shard_index="$4"
 
-          tests=$(jq -r '.testsuite[] | select(.enabled == true) | .testCases[] | select(.enabled == true) | .name' "$suite" \
-            | tr ', ' '\n\n' | grep -v '^$' \
-            | awk -v n="$num_shards" -v i="$shard_index" \
-                '(NR - 1) % n == i { printf "%s%s", (c++ ? "," : ""), $0 }')
+          # Enabled test names of the enabled suites; $1 = "serial" keeps only SERIAL_SUITES, "rest" drops them
+          suite_tests() {
+            jq -r --arg mode "$1" --arg serial "${SERIAL_SUITES:-}" '
+              ($serial | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $names
+              | .testsuite[] | select(.enabled == true)
+              | select($mode == "all" or ((.name as $n | $names | index($n) != null) == ($mode == "serial")))
+              | .testCases[] | select(.enabled == true) | .name' "$suite" \
+              | tr ', ' '\n\n' | grep -v '^$' || true
+          }
+          # Round-robin $1 lines of stdin over $2 buckets, keeping bucket $3, as a comma list
+          pick() { awk -v n="$1" -v i="$2" '(NR - 1) % n == i { printf "%s%s", (c++ ? "," : ""), $0 }'; }
+
+          # Suites in SERIAL_SUITES log in with accounts the backend allows on one device at a time
+          # ("403: Unauthorized access: multiple devices"), so running them on several shards at once makes the
+          # shards log each other out. Keep them all on shard 0 and spread the other suites over the other shards.
+          serial_tests=$(suite_tests serial)
+          if [[ "$num_shards" -gt 1 && -n "$serial_tests" ]]; then
+            if [[ "$shard_index" -eq 0 ]]; then
+              tests=$(pick 1 0 <<< "$serial_tests")
+            else
+              tests=$(suite_tests rest | pick "$((num_shards - 1))" "$((shard_index - 1))")
+            fi
+          else
+            tests=$(suite_tests all | pick "$num_shards" "$shard_index")
+          fi
 
           if [[ -z "$tests" ]]; then
             echo "No enabled tests assigned to shard $shard_index of $num_shards — nothing to run."
@@ -591,6 +617,7 @@ jobs:
         if: "${{ inputs.instrument_options == '' }}"
         env:
           ANDROID_TEST_RETRIES: ${{ inputs.test-retries || '2' }}
+          SERIAL_SUITES: ${{ inputs.serial-suites }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.version }}
