@@ -67,6 +67,8 @@ on:
           - '4'
           - '8'
           - '16'
+          - '24'
+          - '32'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.actor }}
@@ -246,7 +248,7 @@ jobs:
         ${{ matrix.runCommand }} 2>&1 | tee ../specs-reporter-${{ matrix.shard }}.log
       env:
         CAPABILITIES: ${{ needs.prepare-matrix.outputs.capabilities }}
-        MAX_INSTANCES: 2
+        MAX_INSTANCES: 1
         R360_DASHBOARD_URL: ${{ needs.prepare-matrix.outputs.dashboard_url || secrets.R360_DASHBOARD_URL }}
         R360_API_URL: ${{ needs.prepare-matrix.outputs.api_url || secrets.API_URL }}
         R360_GRAPHQL_ENDPOINT: ${{ needs.prepare-matrix.outputs.graphql_endpoint || secrets.GRAPHQL_ENDPOINT }}
