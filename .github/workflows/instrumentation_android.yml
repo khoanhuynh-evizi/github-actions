@@ -45,7 +45,7 @@ on:
         type: string
         default: 'google_apis'
       test-retries:
-        description: 'How many times failed tests are rerun (0 disables retries)'
+        description: 'How many times each failed test is rerun (0 disables retries). Tests that never ran because the emulator died are rerun for as long as the reruns make progress'
         required: false
         type: string
         default: '2'
@@ -83,10 +83,11 @@ jobs:
 
   test:
     runs-on: ${{ inputs.os-version || 'ubuntu-latest' }}
-    # Without this a hung step holds the runner for GitHub's 6h job limit. A shard of the full run is ~1/4 of the
-    # ~4h suite plus retries, so 4h is a generous ceiling; a custom instrument_options subset runs unsharded and
-    # keeps the 6h maximum.
-    timeout-minutes: ${{ inputs.instrument_options == '' && 240 || 360 }}
+    # Without this a hung step holds the runner for GitHub's 6h job limit. Shards 1+ take ~1/4 of the ~4h suite plus
+    # retries, so 4h is a generous ceiling. Shard 0 gets the 6h maximum: it runs every SERIAL_SUITES test (~80 tests
+    # at ~100s each, ~2.5h before any rerun) and each emulator death costs a restart. A custom instrument_options
+    # subset runs unsharded (as shard 0) and keeps the 6h maximum too. Keep JOB_TIMEOUT_MINUTES below in sync.
+    timeout-minutes: ${{ (inputs.instrument_options != '' || matrix.shard == 0) && 360 || 240 }}
     strategy:
       # One shard failing must not cancel the others still running.
       fail-fast: false
@@ -106,7 +107,14 @@ jobs:
       # AVD/options when it dies mid-run.
       AVD_NAME: Nexus6_${{ matrix.version }}
       EMULATOR_OPTIONS: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back emulated -camera-front emulated
+      # Same value as timeout-minutes above (it can't read env), for the test deadline below
+      JOB_TIMEOUT_MINUTES: ${{ (inputs.instrument_options != '' || matrix.shard == 0) && 360 || 240 }}
     steps:
+      # A job that hits timeout-minutes is cancelled and its upload steps don't run, losing every result. The test
+      # scripts stop by this deadline instead, leaving 15 minutes for the diagnose / upload / report steps.
+      - name: Set test deadline
+        run: echo "TEST_DEADLINE_EPOCH=$(( $(date +%s) + (JOB_TIMEOUT_MINUTES - 15) * 60 ))" >> "$GITHUB_ENV"
+
       - name: Clean up workspace
         uses: jlumbroso/free-disk-space@main
         with:
@@ -285,9 +293,10 @@ jobs:
           EOF
           chmod +x "$RUNNER_TEMP/monitor.sh"
 
-      # Shared by the sharded full run and the custom instrument_options run: failed tests, and tests that never
-      # ran because the instrumentation/emulator died mid-run, are rerun (ANDROID_TEST_RETRIES times) and folded
-      # into the first run's JUnit XML before it is uploaded.
+      # Shared by the sharded full run and the custom instrument_options run: failed tests are rerun up to
+      # ANDROID_TEST_RETRIES times, tests that never ran because the instrumentation/emulator died mid-run are rerun
+      # for as long as the reruns keep getting further, and everything is folded into the first run's JUnit XML
+      # before it is uploaded.
       - name: Create test run scripts
         run: |
           cat > "$RUNNER_TEMP/merge_retry.py" <<'PYEOF'
@@ -380,7 +389,7 @@ jobs:
                                   tc.append(node)
                               note = f"Failed again on retry {attempt}"
                           else:
-                              note = f"Passed on retry {attempt} after failing the first run"
+                              note = f"Passed on retry {attempt} after failing an earlier run"
                               tc.set("time", rerun.get("time", tc.get("time", "0")))
                           out = tc.find("system-out")
                           if out is None:
@@ -437,23 +446,57 @@ jobs:
           #!/usr/bin/env bash
           # usage: run-with-retry.sh <package> <tests>
           # <tests> are class or class#method names relative to <package>, separated by commas or spaces.
-          # Runs the tests, then reruns the failed ones and the ones that never ran (instrumentation crash / emulator died
-          # mid-run) up to ANDROID_TEST_RETRIES times and folds the reruns into the first run's JUnit XML, so the upload /
-          # report steps keep reading app/build/outputs/*/connected as before. When the emulator is gone it is restarted
-          # (AVD_NAME + EMULATOR_OPTIONS from the step env) before the rerun.
+          # Runs the tests, then reruns them and folds every rerun into the first run's JUnit XML, so the upload / report
+          # steps keep reading app/build/outputs/*/connected as before:
+          #   - failed tests are rerun up to ANDROID_TEST_RETRIES more times each;
+          #   - tests that never ran (instrumentation crash / emulator died mid-run) are rerun for as long as the reruns keep
+          #     getting further: a long shard can lose its emulator several times, so a fixed rerun count leaves tests unrun.
+          #     It stops after ANDROID_TEST_MAX_STALLED reruns in a row that add no new result.
+          # When the emulator is gone it is restarted (AVD_NAME + EMULATOR_OPTIONS from the step env) before the rerun, and
+          # what the host looked like at that moment is logged to app/build/outputs/emulator-diagnostics/ (uploaded).
+          # TEST_DEADLINE_EPOCH (set by the job) is when the tests must be done for the job to still upload its reports
+          # before timeout-minutes cancels it: gradle runs are cut off there, and a rerun only takes the tests that fit
+          # (ANDROID_TEST_EST_SECONDS each).
           set -o pipefail
           package="$1"
           tests=$(tr ', ' '\n\n' <<< "$2" | grep -v '^$' | sed "s/^/$package./" | paste -sd, -)
           retries="${ANDROID_TEST_RETRIES:-2}"
+          max_stalled="${ANDROID_TEST_MAX_STALLED:-2}"
+          max_attempts="${ANDROID_TEST_MAX_ATTEMPTS:-30}"
+          test_seconds="${ANDROID_TEST_EST_SECONDS:-150}"
+          deadline="${TEST_DEADLINE_EPOCH:-0}"
           results="app/build/outputs/androidTest-results/connected"
           final="$RUNNER_TEMP/connected-final"
           merge="$RUNNER_TEMP/merge_retry.py"
+          diag="app/build/outputs/emulator-diagnostics"
           serial="emulator-5554"
           restarts=0
+          # One line per failure seen (class#method), across the first run and the reruns
+          fails_log="$RUNNER_TEMP/test-failures.txt"
+          : > "$fails_log"
+
+          # Number of entries in a comma separated list
+          count() { if [[ -z "$1" ]]; then echo 0; else tr ',' '\n' <<< "$1" | grep -vc '^$'; fi; }
+
+          # Seconds left before the deadline (a large number when there is none)
+          time_left() {
+            if [[ "$deadline" -gt 0 ]]; then echo $(( deadline - $(date +%s) )); else echo 999999; fi
+          }
 
           run_tests() {
             rm -rf "$results"
-            ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$1" --continue --stacktrace
+            local left rc
+            left=$(time_left)
+            if [[ "$left" -le 60 ]]; then
+              echo "::warning::No time left before the job deadline, not starting the test run."
+              return 1
+            fi
+            # Cut the run off at the deadline so the job still uploads what it has instead of being cancelled
+            timeout --kill-after=60 "$left" \
+              ./gradlew app:connectedStagingDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class="$1" --continue --stacktrace
+            rc=$?
+            if [[ $rc -eq 124 || $rc -eq 137 ]]; then echo "::warning::Test run hit the job deadline and was stopped."; fi
+            return $rc
           }
 
           has_report() { [[ -n "$(find "$1" -name 'TEST-*.xml' 2>/dev/null)" ]]; }
@@ -462,11 +505,28 @@ jobs:
             [[ "$(timeout 20 adb -s "$serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]
           }
 
+          # What the host looked like when the emulator went away, to tell an OOM kill from a qemu crash or an adb drop
+          collect_diagnostics() {
+            mkdir -p "$diag"
+            {
+              echo "=== $(date -u '+%F %T') UTC: emulator $serial is not responding (before restart #$((restarts + 1)))"
+              echo "--- adb devices"; timeout 20 adb devices -l
+              echo "--- free -m"; free -m
+              echo "--- loadavg"; cat /proc/loadavg
+              echo "--- emulator processes"; pgrep -af 'qemu-system|emulator' || echo "none"
+              echo "--- dmesg (oom / kills / crashes)"
+              { sudo -n dmesg -T 2>/dev/null || echo "dmesg not readable"; } \
+                | grep -iE 'out of memory|oom|killed process|qemu|segfault|general protection|dmesg not readable' | tail -n 30 \
+                || echo "no matching kernel messages"
+            } 2>&1 | tee -a "$diag/emulator-deaths.log"
+          }
+
           restart_emulator() {
             if [[ -z "${AVD_NAME:-}" ]]; then
               echo "AVD_NAME is not set, cannot restart the emulator."
               return 1
             fi
+            collect_diagnostics
             restarts=$((restarts + 1))
             echo "::warning::Emulator $serial is not responding, restarting it (restart #$restarts)"
             timeout 20 adb -s "$serial" emu kill >/dev/null 2>&1 || true
@@ -495,11 +555,25 @@ jobs:
 
           ensure_device() { device_ready || restart_emulator; }
 
-          # Tests to rerun: failed ones plus requested ones missing from the report
-          pending_tests() {
-            { python3 "$merge" failed "$final" "$package"; python3 "$merge" missing "$final" "$package" "$tests"; } \
-              | tr ',' '\n' | grep -v '^$' | awk '!seen[$0]++' | paste -sd, -
+          # Count one failure for every failed test in the run in $1
+          record_failures() {
+            python3 "$merge" failed "$1" "$package" | tr ',' '\n' | grep -v '^$' >> "$fails_log"
           }
+
+          # Tests to rerun: requested ones missing from the report first, so a test that keeps killing the emulator can't
+          # keep them from running, then failed ones that have retries left
+          pending_tests() {
+            local t
+            {
+              python3 "$merge" missing "$final" "$package" "$tests" | tr ',' '\n'
+              for t in $(python3 "$merge" failed "$final" "$package" | tr ',' ' '); do
+                if [[ $(grep -cxF -- "$t" "$fails_log") -le $retries ]]; then echo "$t"; fi
+              done
+            } | grep -v '^$' | awk '!seen[$0]++' | paste -sd, -
+          }
+
+          # The emulator logs of restarted emulators show why one died again (the first one's output is in the job log)
+          trap 'mkdir -p "$diag"; cp "$RUNNER_TEMP"/emulator-restart-*.log "$diag/" 2>/dev/null || true' EXIT
 
           if [[ -z "$tests" ]]; then
             echo "No tests to run."
@@ -529,41 +603,81 @@ jobs:
           fi
 
           rm -rf "$final"; cp -r "$results" "$final"
+          record_failures "$final"
           if [[ -z "$(pending_tests)" ]]; then
             # Gradle failed without a failed or missing test in the report (e.g. a build error): don't hide it
             echo "Run failed without a failed or missing test in the report, not retrying."
             exit $rc
           fi
 
-          for attempt in $(seq 1 "$retries"); do
-            missing=$(python3 "$merge" missing "$final" "$package" "$tests")
+          attempt=0
+          stalled=0
+          while :; do
             pending=$(pending_tests)
             [[ -z "$pending" ]] && break
+            if [[ $attempt -ge $max_attempts ]]; then
+              echo "Reached $max_attempts reruns, stopping."
+              break
+            fi
+            if [[ $stalled -ge $max_stalled ]]; then
+              echo "$stalled rerun(s) in a row added no new result, stopping."
+              break
+            fi
+            missing=$(python3 "$merge" missing "$final" "$package" "$tests")
             if [[ -n "$missing" ]]; then
-              echo "$(tr ',' '\n' <<< "$missing" | wc -l | tr -d ' ') test(s) never ran (instrumentation crash or emulator died):"
+              echo "$(count "$missing") test(s) never ran (instrumentation crash or emulator died):"
               tr ',' '\n' <<< "$missing"
             fi
             if ! ensure_device; then
               echo "Emulator could not be restarted, giving up on retries."
               break
             fi
-            echo "Retry $attempt of $retries for:"; tr ',' '\n' <<< "$pending"
+            # Only take the tests that fit before the deadline (build, install and orchestrator setup take a few minutes)
+            if [[ "$deadline" -gt 0 ]]; then
+              fit=$(( ($(time_left) - 300) / test_seconds ))
+              if [[ $fit -lt 1 ]]; then
+                echo "::warning::Not enough time left before the job deadline for another rerun."
+                break
+              fi
+              if [[ $(count "$pending") -gt $fit ]]; then
+                echo "Only $fit of $(count "$pending") pending test(s) fit before the job deadline."
+                pending=$(tr ',' '\n' <<< "$pending" | head -n "$fit" | paste -sd, -)
+              fi
+            fi
+
+            attempt=$((attempt + 1))
+            missing_before=$(count "$missing")
+            failed_before=$(count "$(python3 "$merge" failed "$final" "$package")")
+            echo "Retry $attempt for:"; tr ',' '\n' <<< "$pending"
             run_tests "$(tr ',' '\n' <<< "$pending" | sed "s/^/$package./" | paste -sd, -)"
             if ! has_report "$results"; then
               echo "Retry $attempt produced no JUnit report."
+              stalled=$((stalled + 1))
               continue
             fi
+            record_failures "$results"
             python3 "$merge" merge "$final" "$results" "$attempt"
+
+            missing_after=$(count "$(python3 "$merge" missing "$final" "$package" "$tests")")
+            failed_after=$(count "$(python3 "$merge" failed "$final" "$package")")
+            # Progress: a test that never ran got a result, or a failed test passed. Reruns of failed tests alone are
+            # already bounded by ANDROID_TEST_RETRIES, so only reruns with never-run tests can stall.
+            if [[ $missing_before -eq 0 || $missing_after -lt $missing_before || $failed_after -lt $failed_before ]]; then
+              stalled=0
+            else
+              stalled=$((stalled + 1))
+            fi
           done
 
           rm -rf "$results"; mkdir -p "$(dirname "$results")"; cp -r "$final" "$results"
           remaining=$(python3 "$merge" failed "$final" "$package")
           missing=$(python3 "$merge" missing "$final" "$package" "$tests")
+          echo "Reruns: $attempt, emulator restarts: $restarts"
           if [[ -n "$remaining" ]]; then
-            echo "Still failing after $retries retries:"; tr ',' '\n' <<< "$remaining"
+            echo "Still failing after retries:"; tr ',' '\n' <<< "$remaining"
           fi
           if [[ -n "$missing" ]]; then
-            echo "Never ran after $retries retries:"; tr ',' '\n' <<< "$missing"
+            echo "$(count "$missing") test(s) never ran:"; tr ',' '\n' <<< "$missing"
           fi
           if [[ -n "$remaining" || -n "$missing" ]]; then exit 1; fi
           echo "All tests passed after retries."
@@ -680,6 +794,7 @@ jobs:
           path: |
             app/build/outputs/*/connected/*
             app/build/outputs/expected-tests.txt
+            app/build/outputs/emulator-diagnostics/**
             app/build/reports/androidTests/connected/**
 
       - name: Generate reports on API ${{ matrix.version }}
