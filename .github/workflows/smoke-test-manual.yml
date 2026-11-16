@@ -35,16 +35,16 @@ on:
         description: 'Run mode'
         required: true
         type: choice
-        default: 'Only Smoke'
+        default: 'Smoke Only'
         options:
           - 'Smoke - Regression - Sanity (Queue)'
           - 'Smoke - Regression - Sanity (Parallel)'
-          - 'Only Smoke'
-          - 'Only Smoke Lite'
-          - 'Only Regression'
-          - 'Only (Full) Regression'
-          - 'Only Sanity'
-          - 'Only Feature'
+          - 'Smoke Only'
+          - 'Smoke Lite Only'
+          - 'Regression Only'
+          - 'Regression (Full) Only'
+          - 'Sanity Only'
+          - 'Feature Only'
       browser:
         description: 'Browser'
         required: true
@@ -146,25 +146,25 @@ jobs:
           MAX_PARALLEL=$SHARDS
 
           case "$RUN_MODE" in
-            "Only Smoke")
+            "Smoke Only")
               MATRIX="[$SMOKE]"
               ;;
-            "Only Smoke Lite")
+            "Smoke Lite Only")
               MATRIX="[$SMOKE_LITE]"
               ;;
-            "Only Regression")
+            "Regression Only")
               MATRIX="[$REGRESSION]"
               ;;
-            "Only (Full) Regression")
+            "Regression (Full) Only")
               MATRIX="[$REGRESSION_FULL]"
               ;;
-            "Only Sanity")
+            "Sanity Only")
               MATRIX="[$SANITY]"
               ;;
             "Smoke - Regression - Sanity (Queue)")
               MATRIX="[$SMOKE,$REGRESSION,$SANITY]"
               ;;
-            "Only Feature")
+            "Feature Only")
               MATRIX="[$FEATURE]"
               ;;
             *)
