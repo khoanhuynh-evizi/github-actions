@@ -35,7 +35,7 @@ on:
         description: 'Run mode'
         required: true
         type: choice
-        default: 'Smoke - Regression - Sanity (Parallel)'
+        default: 'Only Smoke'
         options:
           - 'Smoke - Regression - Sanity (Queue)'
           - 'Smoke - Regression - Sanity (Parallel)'
