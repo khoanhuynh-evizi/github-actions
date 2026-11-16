@@ -1,4 +1,4 @@
-name: Smoke Test Daily (-s)
+name: Dashboard - Smoke Test (-s)
 
 on:
   # schedule:
