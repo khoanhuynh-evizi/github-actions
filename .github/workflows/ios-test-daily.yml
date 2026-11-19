@@ -102,6 +102,10 @@ jobs:
 
       - name: Copy Configuration
         run: sh ci_scripts/ci_configuration.sh
+        env:
+          DECISIV_API_HOST_STAGING: ${{ secrets.DECISIV_API_HOST_STAGING }}
+          DECISIV_CLIENT_ID_STAGING: ${{ secrets.DECISIV_CLIENT_ID_STAGING }}
+          DECISIV_PORTAL_HOST_STAGING: ${{ secrets.DECISIV_PORTAL_HOST_STAGING }}
 
       - name: Install xcpretty
         run: |
